@@ -16,6 +16,6 @@ You should be able to trace and run multiple sequence lengths and pick the corre
 
 This is tested on Inferentia2.  You should be able to run it on any Neuroncore v2 or later device (Trainium1, Trainium2, etc.)
 
-Inferentia1 didn't work because it supports Pytorch 1.1.3.  I could only load an older version of transformers ( 4.38.2) that didn't recognize modernbert.  If you can load the graph somehow and trace it you may be able to run it.
+Inferentia1 didn't work because it supports Pytorch 1.13.1.  I could only load an older version of transformers ( 4.38.2) that didn't recognize modernbert.  If you can load the graph somehow and trace it you may be able to run it.
 
 Optimum Neuron runs 2x faster for the same sequence length , batch size, and auto-cast setting.  The Optimum Neuron library supports models with the Neuronx Distributed library.  I'm not sure if that is the difference or if they are compiling with a different setting.
