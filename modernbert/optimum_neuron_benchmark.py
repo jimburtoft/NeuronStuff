@@ -9,6 +9,8 @@ import pandas as pd
 import os
 
 """
+You need to compile the model before you run it:
+
 optimum-cli export neuron \
   --model clapAI/modernBERT-base-multilingual-sentiment \
   --sequence_length 2048 \
