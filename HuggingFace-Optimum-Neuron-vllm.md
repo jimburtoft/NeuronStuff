@@ -38,3 +38,32 @@ for output in outputs:
     generated_text = output.outputs[0].text
     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
 ```
+
+
+# Example using Phi and vllm server
+
+If you want to run the optimum-neuron vllm implementation, you can start on any machine with the Neuron SDK installed (2.24 or 2.25 for Optimum Neuron 0.3.0 -- Current version as of 9/3/25).
+
+(You can confirm your SDK version with this script:  ```wget https://raw.githubusercontent.com/jimburtoft/Neuron-SDK-Detector/main/neuron_detector.py``` )
+
+(Instructions on how to deploy an EC2 instance with the Hugging Face DLAMI here: https://repost.aws/articles/ARTxLi0wndTwquyl7frQYuKg/easy-deploy-of-an-inferentia-or-trainium-instance-on-ec2)
+
+### Install optimum-neuron
+```pip install optimum-neuron[neuronx,vllm]```
+
+### Compile
+Compile the model with your parameters:
+
+```
+optimum-cli export neuron --model microsoft/phi-4 --task text-generation \
+--sequence_length 1000 --batch_size 10 --num_cores 2 ~/phi4Compiled
+```
+### Serve
+Then start a server (make sure your max-num-seqs matches your batch_size from compilation, as well as your max-model-len matches sequence_length and tensor-parallel-size matches num_cores, and --model matches the output directory at the end of the optimum-cli command):
+
+```
+python3 -m vllm.entrypoints.openai.api_server --model ~/phi4Compiled \
+ --max-model-len 1000 --tensor-parallel-size 2 --max-num-seqs=10
+```
+
+
