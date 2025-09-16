@@ -103,7 +103,7 @@ if __name__ == '__main__':
         if auto_cast == "default":
             compiler_args = []
         elif auto_cast == "none":
-            compiler_args = "---auto-cast none"
+            compiler_args = "--auto-cast none"
         else:
             compiler_args = "--auto-cast {} --auto-cast-type {}".format(auto_cast, auto_cast_type)
         print("compiler_args: ", compiler_args)
