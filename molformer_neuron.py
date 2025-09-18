@@ -1,3 +1,5 @@
+# inference on Neuron for the https://github.com/IBM/molformer model
+
 import torch
 import torch_neuronx
 from transformers import AutoModel, AutoTokenizer
