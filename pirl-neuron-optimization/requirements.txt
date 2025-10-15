@@ -1,0 +1,11 @@
+# AWS Neuron Requirements
+torch-neuronx>=2.8.0
+neuronx-cc>=2.21.0
+
+# Core dependencies (should match original PIRL project)
+torch>=2.8.0
+numpy>=1.21.0
+tqdm>=4.62.0
+
+# Optional: For comprehensive testing
+tensorboard>=2.8.0
