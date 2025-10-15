@@ -5,7 +5,7 @@ This repository contains AWS Neuron optimizations for the Physics-Informed Reinf
 ## 🔗 Original Project
 
 This work is based on the PIRL implementation from:
-**[PIRL ITSC 2024 Repository](https://github.com/your-username/pirl_itsc2024)** *(replace with actual repository URL)*
+**[PIRL ITSC 2024 Repository](https://github.com/hoshino06/pirl_itsc2024/tree/main/pirl_carla/rl_agent)** 
 
 The original PIRL agent implements physics-informed reinforcement learning for autonomous driving using CARLA simulator.
 
