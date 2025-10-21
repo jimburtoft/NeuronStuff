@@ -1,0 +1,8 @@
+# Dependencies for neuronx benchmarking automation
+# These should be installed in the virtual environment at /opt/aws_neuronx_venv_pytorch_2_8_nxd_inference
+
+# Process management and system monitoring
+psutil>=5.8.0
+
+# HTTP requests for server health checks (optional, will fallback to port checks if not available)
+requests>=2.25.0
