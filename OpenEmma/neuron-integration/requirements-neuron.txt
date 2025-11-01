@@ -1,0 +1,13 @@
+# Neuron-specific requirements for AWS Inferentia2
+# Install these in addition to requirements.txt when running on Inferentia
+
+# Note: These should be installed in the Neuron virtual environment:
+# source /opt/aws_neuronx_venv_pytorch_2_8_nxd_inference/bin/activate
+
+# The following are already in the Neuron venv:
+# - neuronx-distributed-inference
+# - torch (Neuron-optimized version)
+# - transformers
+
+# Additional requirements not in base requirements.txt:
+# (none currently - all dependencies are satisfied by the Neuron venv)
