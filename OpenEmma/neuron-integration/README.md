@@ -134,10 +134,9 @@ python main.py \
 
 ## 📊 Performance
 
-| Metric | CPU/GPU | Inferentia2 | Improvement |
+| Metric | CPU | Inferentia2 | Improvement |
 |--------|---------|-------------|-------------|
 | Inference Time | 10-20s/frame | 5-10s/frame | **2x faster** |
-| Cost per Hour | $3-8 | $1.50 | **2-5x cheaper** |
 | Throughput | 3-6 fps | 6-12 fps | **2x higher** |
 
 ## 🔧 Configuration
@@ -185,7 +184,7 @@ Ensure you're on inf2.48xlarge or larger (needs 8+ Neuron cores for tp_degree=8)
 The integration uses a simple naming convention:
 
 ```bash
-# CPU/GPU (original behavior)
+# CPU (original behavior)
 --model-path meta-llama/Llama-3.2-11B-Vision-Instruct
 
 # Inferentia2 (Neuron-optimized)
@@ -200,7 +199,7 @@ When the model path contains "neuron", the code:
 ### Integration Approach
 - **Minimal changes**: Only 8 lines added to main.py
 - **No breaking changes**: Original code works unchanged
-- **Easy rollback**: Remove `-neuron` suffix to use CPU/GPU
+- **Easy rollback**: Remove `-neuron` suffix to use CPU
 - **Clean separation**: All Neuron code in `openemma_neuron.py`
 
 ## 📁 File Descriptions
@@ -285,16 +284,10 @@ aws s3 cp --no-sign-request \
     datasets/NuScenes/
 ```
 
-## 💰 Cost Estimation
-
-### Instance Costs (us-east-1)
-- **inf2.48xlarge**: $12.98/hour (recommended)
-- **inf2.24xlarge**: $6.49/hour
-- **inf2.8xlarge**: $1.97/hour
 
 ### Processing Time
-- **v1.0-mini** (10 scenes, ~400 frames): 30-60 minutes → $6-13
-- **Full dataset** (850 scenes, ~40k frames): 50-100 hours → $650-1,300
+- **v1.0-mini** (10 scenes, ~400 frames): 30-60 minutes 
+- **Full dataset** (850 scenes, ~40k frames): 50-100 hours 
 
 ## 🔗 References
 
@@ -315,7 +308,6 @@ All components tested and validated:
 
 ## 📝 Version Info
 
-- **Package**: 1.0
 - **Date**: November 1, 2025
 - **OpenEMMA**: Compatible with latest
 - **Neuron SDK**: PyTorch 2.8 venv
