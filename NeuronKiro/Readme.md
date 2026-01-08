@@ -1,13 +1,17 @@
 # Neuron SDK documentation
 The Neuron SDK documentation is available on the aws-documentation mcp server.  However, it is only available for searching.  If you try to retrieve it you get a 403 error.  However, you can retrieve it with the fetch server.  
 
-To use the MCP servers, you need to have uv installed on the system and accessible by Kiro.  I do this by using 
+To use the MCP servers, you need to have uv installed on the system and accessible by Kiro.  I do this on Ubuntu by using 
 
 ```
 sudo pip3 install uv
 ```
+or if you get an error about externally managed packages
+```
+sudo pip3 install uv --break-system-packages
+```
 
-on Ubuntu or
+or
 
 ```
 brew install uv
