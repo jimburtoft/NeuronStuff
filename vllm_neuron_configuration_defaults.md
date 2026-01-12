@@ -86,11 +86,11 @@ python -m vllm.entrypoints.openai.api_server \
 
 ## Advanced NxDI Configuration Override
 
-For advanced users who need to override underlying NxD Inference parameters not exposed through vLLM CLI options, use the `--additional-config` parameter with `override_neuron_config`:
+For advanced users who need to override underlying NxD Inference parameters not exposed through vLLM CLI options, use the `--additional-config` parameter with `override-neuron-config`:
 
 ```bash
 --additional-config '{
-  "override_neuron_config": {
+  "override-neuron-config": {
     "enable_prefix_caching": true,
     "logical_nc_config": 2,
     "skip_warmup": false
@@ -101,7 +101,7 @@ For advanced users who need to override underlying NxD Inference parameters not 
 ### Available NxDI Override Options
 
 You can pass parameters through vLLM into the Neuron NxDI library.  However, it is possible that not all of these have been tested with vLLM.
-The following options may be overridden using `--additional-config '{"override_neuron_config": {...}}'`:
+The following options may be overridden using `--additional-config '{"override-neuron-config": {...}}'`:
 
 #### Performance Optimization
 ```python
