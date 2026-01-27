@@ -11,19 +11,19 @@ Based on the config from https://awsdocs-neuron.readthedocs-hosted.com/en/latest
 # Activate the virtual environment
 source /opt/aws_neuronx_venv_pytorch_inference_vllm/bin/activate
 
-# Launch Qwen3-Coder-480B with tp=64 and lnc=2 (preferred configuration)
+# BASELINE WORKING CONFIG - 16K without prefix caching
+# This is the known working configuration from previous successful compilations
 VLLM_NEURON_FRAMEWORK='neuronx-distributed-inference' python -m vllm.entrypoints.openai.api_server \
   --model="/home/ubuntu/Qwen3-Coder-480B-A35B-Instruct/" \
   --tensor-parallel-size=64 \
   --max-num-seqs=1 \
-  --max-model-len=2048 \
+  --max-model-len=16384 \
   --additional-config='{"override_neuron_config": {
     "async_mode": false,
-    "attention_dp_degree": 1,
     "attn_kernel_enabled": false,
     "batch_size": 1,
     "cc_pipeline_tiling_factor": 1,
-    "context_encoding_buckets": [2048],
+    "context_encoding_buckets": [16384],
     "cp_degree": 1,
     "ctx_batch_size": 1,
     "enable_bucketing": true,
@@ -31,7 +31,7 @@ VLLM_NEURON_FRAMEWORK='neuronx-distributed-inference' python -m vllm.entrypoints
     "fused_qkv": false,
     "is_continuous_batching": true,
     "logical_nc_config": 2,
-    "max_context_length": 2048,
+    "max_context_length": 16384,
     "moe_ep_degree": 1,
     "moe_tp_degree": 64,
     "on_device_sampling_config": {
@@ -43,9 +43,9 @@ VLLM_NEURON_FRAMEWORK='neuronx-distributed-inference' python -m vllm.entrypoints
     "qkv_cte_nki_kernel_fuse_rope": false,
     "qkv_kernel_enabled": false,
     "qkv_nki_kernel_enabled": false,
-    "seq_len": 2048,
+    "seq_len": 16384,
     "sequence_parallel_enabled": true,
-    "token_generation_buckets": [2048],
+    "token_generation_buckets": [16384],
     "torch_dtype": "bfloat16",
     "tp_degree": 64
   }}' \
