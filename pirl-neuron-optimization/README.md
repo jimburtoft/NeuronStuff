@@ -52,8 +52,8 @@ pip install torch-neuronx neuronx-cc
 
 1. **Clone your original PIRL project**:
 ```bash
-git clone https://github.com/your-username/pirl_itsc2024.git
-cd pirl_itsc2024
+git clone https://github.com/jimburtoft/NeuronStuff.git
+cd NeuronStuff/pirl-neuron-optimization
 ```
 
 2. **Add Neuron optimization files**:
