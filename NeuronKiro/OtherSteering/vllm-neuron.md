@@ -57,7 +57,7 @@ additional_config = {
 
 ### CLI Configuration
 ```bash
---additional-config '{"override_neuron_config": {"enable_prefix_caching": true}}'
+--additional-config '{"override-neuron-config": {"enable_prefix_caching": true}}'
 ```
 
 ## Key Architecture Differences
