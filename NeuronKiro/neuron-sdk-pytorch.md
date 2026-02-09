@@ -20,6 +20,8 @@ Always activate this venv before:
 
 ## Documentation Access
 
+**CRITICAL**: transformers-neuronx and neuron-cc are both deprecated.  (neuronx-cc is the current compiler)
+
 AWS Neuron SDK documentation is available via MCP server tools:
 
 ### Search Documentation
