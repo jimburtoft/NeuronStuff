@@ -21,7 +21,7 @@ Run OpenEMMA with Llama 3.2 11B Vision on AWS Inferentia2 for **2x faster, 2-5x 
 
 ### Step 1: Clone OpenEMMA
 ```bash
-git clone https://github.com/OpenDriveLab/OpenEMMA.git
+git clone https://github.com/taco-group/OpenEMMA.git
 cd OpenEMMA
 ```
 
