@@ -6,9 +6,10 @@ Expected compile time: 239 seconds
 """
 import torch
 import torch_neuronx
-from transformers import AutoModel, AutoImageProcessor
 import time
 import os
+from safetensors.torch import load_file
+import open_clip
 
 print("="*80)
 print("SigLIP 384px Model Compilation for Neuron")
@@ -35,15 +36,21 @@ if os.path.exists(OUTPUT_FILE):
         print("Compilation cancelled")
         exit(0)
 
-# Load model
-print("\nLoading model from HuggingFace...")
-model = AutoModel.from_pretrained(
-    MODEL_PATH,
-    trust_remote_code=True,
-    local_files_only=True
+# Load model using open_clip
+print("\nLoading model with open_clip...")
+state_dict = load_file(f'{MODEL_PATH}/open_clip_model.safetensors')
+
+model, _, preprocess = open_clip.create_model_and_transforms(
+    'ViT-SO400M-14-SigLIP-384',
+    pretrained=False
 )
+model.load_state_dict(state_dict)
 model.eval()
-print("✓ Model loaded")
+print(f"✓ Model loaded ({len(state_dict)} parameters)")
+
+# Get vision model
+visual_model = model.visual
+visual_model.eval()
 
 # Create example input
 example_input = torch.randn(BATCH_SIZE, 3, IMAGE_SIZE, IMAGE_SIZE)
@@ -54,7 +61,7 @@ print("\nCompiling for Neuron (expected: 239 seconds)...")
 start_time = time.time()
 
 model_neuron = torch_neuronx.trace(
-    model.vision_model,
+    visual_model,
     example_input,
     compiler_workdir='./neuron_compile_384',
     compiler_args=[
