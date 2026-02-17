@@ -20,7 +20,7 @@ Tested 2026-02-17 with LNC (Logical NeuronCore) configuration:
 **Key Findings:**
 - LNC=1 provides **31% higher** total instance throughput (115.0 vs 87.8 img/s)
 - LNC=2 has **34% lower** latency per image
-- LNC=1 utilizes all 8 cores; LNC=2 uses 4 cores
+- LNC=1 utilizes 8 cores individually; LNC=2 uses 4 virtual cores 
 
 **Recommendation:** 
 - Use **LNC=1** for maximum instance throughput (batch processing, high-load scenarios)
