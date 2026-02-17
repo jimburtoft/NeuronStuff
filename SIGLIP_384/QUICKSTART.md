@@ -3,11 +3,29 @@
 Deploy the Neuron DLAMI on an inf2.8xlarge.  
 https://awsdocs-neuron.readthedocs-hosted.com/en/latest/setup/neuron-setup/multiframework/multi-framework-ubuntu24-neuron-dlami.html
 
-## 1. Test Single Core
+## Setup
 
 ```bash
 cd siglip_384_production
 source /opt/aws_neuronx_venv_pytorch_2_9_nxd_inference/bin/activate
+pip install open_clip_torch
+```
+
+## 1. Download Model
+
+```bash
+huggingface-cli download timm/ViT-SO400M-14-SigLIP-384 --local-dir timm/ViT-SO400M-14-SigLIP-384/
+```
+
+## 2. Compile Model
+
+```bash
+python3 compile_model.py
+```
+
+## 3. Test Single Core
+
+```bash
 python3 inference_single.py
 ```
 
@@ -17,7 +35,7 @@ Throughput: 13.38 img/s
 Latency: 74.74 ms/image
 ```
 
-## 2. Test Dual Core
+## 4. Test Dual Core
 
 ```bash
 ./run_dual_core.sh
@@ -31,7 +49,7 @@ Expected output (measured):
 
 Press Ctrl+C to stop.
 
-## 3. Run Full Benchmark
+## 5. Run Full Benchmark
 
 ```bash
 python3 benchmark.py

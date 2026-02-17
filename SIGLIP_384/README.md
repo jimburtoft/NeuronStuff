@@ -10,10 +10,22 @@ High-performance inference for SigLIP-SO400M-14-384 on AWS inf2.8xlarge.
 
 ## Quick Start
 
-### 1. Compile Model (one-time setup)
+### 1. Setup Environment
 
 ```bash
 source /opt/aws_neuronx_venv_pytorch_2_9_nxd_inference/bin/activate
+pip install open_clip_torch
+```
+
+### 2. Download Model
+
+```bash
+huggingface-cli download timm/ViT-SO400M-14-SigLIP-384 --local-dir timm/ViT-SO400M-14-SigLIP-384/
+```
+
+### 3. Compile Model (one-time setup)
+
+```bash
 python3 compile_model.py
 ```
 
