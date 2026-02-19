@@ -7,7 +7,7 @@ LNC (Logical NeuronCore) configuration testing for SigLIP-SO400M-14-384 on AWS T
 This directory contains scripts and documentation for testing SigLIP 384px inference performance with different LNC configurations on Trainium2 (trn2) instances.
 
 **Tested on:** trn2.3xlarge (sa-east-1)  
-**Date:** 2026-02-17  
+**Date:** 2026-02-18 (updated with `--auto-cast=matmult` optimization)  
 
 ## What is LNC?
 
@@ -23,24 +23,25 @@ Logical NeuronCore (LNC) configuration determines how physical NeuronCores are g
 
 ## Measured Performance
 
-| Configuration | Logical Cores | Instance Throughput | Per-Core | Latency |
-|--------------|---------------|---------------------|----------|---------|
-| **LNC=2** | 4 | **141.1 img/s** | 35.43 img/s | 28.23 ms |
-| **LNC=1** | 8 | **115.0 img/s** | 14.38 img/s | 69.56 ms |
+| Configuration | Logical Cores | Instance Throughput | Per-Core | Latency | Model Size |
+|--------------|---------------|---------------------|----------|---------|------------|
+| **LNC=2** | 4 | **141.1 img/s** | 35.43 img/s | 28.23 ms | 1334 MB |
+| **LNC=1** | 8 | **219.0 img/s** | 27.37 img/s | 36.53 ms | 672 MB |
 
 *Instance throughput = per-core performance × number of cores*  
 *Updated with `--auto-cast=matmult` optimization (see below)*
 
 ### Key Findings
 
-1. **LNC=2 with matmult flag provides best per-core performance** (35.43 img/s, 28.23ms latency)
-2. **LNC=1 provides highest total throughput** with 8 cores (115.0 img/s)
-3. **LNC=2 has 60% lower latency** per image (28.23ms vs 69.56ms)
+1. **LNC=1 provides highest total throughput** (219.0 img/s with 8 cores) - **55% better than LNC=2**
+2. **LNC=2 provides best per-core performance** (35.43 img/s) and lowest latency (28.23 ms)
+3. **LNC=1 has 50% smaller model footprint** (672 MB vs 1334 MB) - better for memory-constrained deployments
+4. **Both configurations benefit from `--auto-cast=matmult`** (90% improvement for LNC=1, 67% for LNC=2)
 
 ### Recommendation
 
-- Use **LNC=2** for best overall performance and lowest latency (recommended)
-- Use **LNC=1** when you need maximum parallel workers (8 cores)
+- Use **LNC=1** for maximum throughput and memory efficiency (recommended for most use cases)
+- Use **LNC=2** for lowest latency per image or when per-core performance is critical
 
 ---
 
@@ -53,14 +54,14 @@ The `--auto-cast=matmult` compiler flag enables automatic casting of matrix mult
 ### Why it matters
 
 **Without the flag (PyTorch 2.9 default):**
-- Single-core throughput: ~21.6 img/s
-- Model size: ~3.0 GB
-- Latency: ~46.3 ms
+- LNC=2: ~21.6 img/s, ~3.0 GB, ~46.3 ms latency
+- LNC=1: ~14.4 img/s, ~1.5 GB, ~69.6 ms latency
 
 **With the flag:**
-- Single-core throughput: **36.1 img/s** (+67% improvement)
-- Model size: **1.3 GB** (-56% reduction)
-- Latency: **27.7 ms** (-40% reduction)
+- LNC=2: **35.4 img/s** (+64%), **1.3 GB** (-57%), **28.2 ms** (-39%)
+- LNC=1: **27.4 img/s** (+90%), **672 MB** (-55%), **36.5 ms** (-48%)
+
+**Impact:** The flag provides 64-90% throughput improvement across both configurations while reducing model size by 55-57%.
 
 ### Accuracy Verification
 
