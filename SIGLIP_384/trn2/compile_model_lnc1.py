@@ -32,7 +32,10 @@ print(f"  Output: {OUTPUT_FILE}")
 print(f"  Batch size: {BATCH_SIZE}")
 print(f"  Image size: {IMAGE_SIZE}x{IMAGE_SIZE}")
 print(f"  LNC: 1 (8 logical cores on trn2.3xlarge)")
-print(f"  Compiler flags: --optlevel 3 --model-type transformer --lnc 1")
+print(
+    f"  Compiler flags: --optlevel 3 --model-type transformer --lnc 1 --auto-cast matmult"
+)
+print(f"  Note: --auto-cast=matmult enables BF16 optimization for better performance")
 
 # Check if already compiled
 if os.path.exists(OUTPUT_FILE):
@@ -80,6 +83,8 @@ model_neuron = torch_neuronx.trace(
         "transformer",
         "--lnc",
         "1",
+        "--auto-cast",
+        "matmult",
     ],
 )
 
