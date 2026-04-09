@@ -1,6 +1,6 @@
 # Wan 2.2 T2V-A14B Video Generation on AWS Trainium2
 
-Generate 768x1280 (81 frames, ~3.2s) video from text prompts using the Wan 2.2 T2V-A14B Mixture-of-Experts diffusion model on a trn2.48xlarge instance.
+Generate 768x1280 (81 frames, ~5s at 16fps) video from text prompts using the Wan 2.2 T2V-A14B Mixture-of-Experts diffusion model on a trn2.48xlarge instance.
 
 ## Model
 
@@ -11,22 +11,34 @@ Generate 768x1280 (81 frames, ~3.2s) video from text prompts using the Wan 2.2 T
 
 ## Performance
 
-Measured on trn2.48xlarge (16 NeuronDevices, 32 NeuronCores, LNC=2) with Neuron SDK 2.28:
+Measured on trn2.48xlarge (16 NeuronDevices, 64 NeuronCores with LNC=2) with Neuron SDK 2.28:
 
 | Phase | Time |
 |-------|------|
-| Pipeline load | 2.9s |
-| Text encoding (CPU) | 5.2s |
-| Expert 1 load (TP=4, CP=4) | 213.0s |
-| Expert 1 denoise (16 steps) | 276.8s |
-| Expert 2 load (TP=4, CP=4) | 223.2s |
-| Expert 2 denoise (34 steps) | 582.6s |
-| VAE decode (Neuron tiled) | 33.4s |
-| **Total wall time** | **1190.0s** |
+| Pipeline load | ~3s |
+| Text encoding (CPU) | ~5s |
+| Expert 1 load (TP=4, CP=16) | ~121s |
+| Expert 1 denoise (16 steps) | ~82s |
+| Expert 2 load (TP=4, CP=16) | ~121s |
+| Expert 2 denoise (34 steps) | ~175s |
+| VAE decode (Neuron tiled) | ~33s |
+| **Total wall time** | **~596s** |
 
-- **Per-step average:** 17.2s
+- **Per-step average:** ~5.2s
 - **Resolution:** 768x1280, 81 frames, 50 denoising steps
-- **Parallelism:** TP=4, CP=4 (world_size=16) per expert
+- **Parallelism:** TP=4, CP=16 (world_size=64) per expert — all 64 NeuronCores
+
+### GPU Comparison
+
+| Config | Time (s) | vs trn2.48xlarge |
+|--------|----------|------------------|
+| **trn2.48xlarge (ours)** | **~596** | **baseline** |
+| 1x H100 | 1042 | **trn2 is 1.75x faster** |
+| 4x H100 | 289 | 2.1x faster than trn2 |
+| 1x A100 | 2736 | **trn2 is 4.6x faster** |
+| 4x A100 | 725 | **trn2 is 1.2x faster** |
+
+GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
 
 ## Files
 
@@ -35,7 +47,6 @@ Measured on trn2.48xlarge (16 NeuronDevices, 32 NeuronCores, LNC=2) with Neuron 
 | `wan22_t2v_a14b_trn2.ipynb` | Source notebook (no outputs) |
 | `wan22_t2v_a14b_trn2_executed.ipynb` | Executed notebook with all outputs |
 | `worker_denoise.py` | Subprocess worker for expert denoising |
-| `worker_denoise_preload.py` | Preloading variant that loads the model while the other expert runs |
 
 ## Quick Start
 
@@ -43,7 +54,7 @@ Open and run `wan22_t2v_a14b_trn2.ipynb` on a trn2.48xlarge instance. The notebo
 
 1. Environment setup (NVMe mount, dependencies)
 2. Model download (118 GB from Hugging Face)
-3. Compilation of all four components (~50 min from scratch):
+3. Compilation of all four components (~15 min from scratch):
    - Text encoder
    - Transformer Expert 1 (high noise)
    - Transformer Expert 2 (low noise)
@@ -53,7 +64,7 @@ Open and run `wan22_t2v_a14b_trn2.ipynb` on a trn2.48xlarge instance. The notebo
 ## Requirements
 
 - **Instance:** trn2.48xlarge (16 NeuronDevices required)
-- **LNC:** 2 (default, gives 32 logical cores with 48 GB HBM each)
+- **LNC:** 2 (default, gives 64 logical cores with 24 GB HBM each)
 - **AMI:** Deep Learning AMI Neuron (Ubuntu 24.04) 20260227 (SDK 2.28)
 - **Venv:** `/opt/aws_neuronx_venv_pytorch_2_9_nxd_inference/`
 - **Disk:** 300+ GB EBS + NVMe mount for model weights and compiled artifacts
@@ -61,11 +72,13 @@ Open and run `wan22_t2v_a14b_trn2.ipynb` on a trn2.48xlarge instance. The notebo
 
 ## Architecture Notes
 
-The A14B MoE model uses two completely independent transformer experts. Because they share no weights, they cannot be loaded simultaneously on a trn2.48xlarge (each requires 16 NeuronCores with TP=4/CP=4). The pipeline:
+The A14B MoE model uses two completely independent transformer experts. Because they share no weights, each requires all 64 NeuronCores (TP=4, CP=16). The pipeline uses subprocess isolation to cleanly load/unload each expert:
 
-1. Loads Expert 1, runs 16 high-noise denoising steps
-2. Unloads Expert 1, loads Expert 2 (preloaded in parallel during step 1)
-3. Runs 34 low-noise denoising steps with Expert 2
+1. Loads Expert 1, runs 16 high-noise denoising steps on all 64 cores
+2. Subprocess exits (cleanly frees HBM), loads Expert 2
+3. Runs 34 low-noise denoising steps with Expert 2 on all 64 cores
 4. Decodes latents to video with the tiled VAE decoder
+
+Context Parallelism (CP=16) splits the 80,640-token sequence across all cores, achieving near-linear scaling: 3.35x faster per-step compared to CP=4. This uses all available hardware rather than leaving 48 of 64 cores idle.
 
 The compilation code is from [whn09/aws-neuron-samples](https://github.com/whn09/aws-neuron-samples) (torch-neuronx/inference/hf_pretrained_wan2.2_t2v_a14b/).
