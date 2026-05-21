@@ -32,11 +32,11 @@ Measured on trn2.48xlarge (16 NeuronDevices, 64 NeuronCores with LNC=2) with Neu
 
 | Config | Time (s) | vs trn2.48xlarge |
 |--------|----------|------------------|
-| **trn2.48xlarge (ours)** | **~596** | **baseline** |
-| 1x H100 | 1042 | **trn2 is 1.75x faster** |
-| 4x H100 | 289 | 2.1x faster than trn2 |
-| 1x A100 | 2736 | **trn2 is 4.6x faster** |
-| 4x A100 | 725 | **trn2 is 1.2x faster** |
+| **trn2.48xlarge (ours)** | **~596** ||
+| 1x H100 | 1042 |  |
+| 4x H100 | 289 | |
+| 1x A100 | 2736 |  |
+| 4x A100 | 725 |  |
 
 GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
 
