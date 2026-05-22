@@ -40,6 +40,7 @@ Measured on trn2.48xlarge (16 NeuronDevices, 64 NeuronCores with LNC=2) with Neu
 | 1x A100 | 2736 | Warm start, 720P |
 | 4x A100 | 725 | Warm start, 720P |
 
+
 GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
 
 ### Optimization Opportunities
