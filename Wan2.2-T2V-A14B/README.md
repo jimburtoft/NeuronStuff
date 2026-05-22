@@ -69,9 +69,28 @@ GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
 
 ### Further Optimization Paths
 
-1. **replace_weights() fix:** SDK SIGSEGV forces separate processes (2x model load). Fixing saves ~179s (15% E2E)
+1. **`copy_()` expert swap (SOLVED):** Use `tensor.copy_()` to swap expert weights in-place without re-initialization. Eliminates subprocess overhead (~179s per expert load). See `repro_replace_weights.py` for details.
 2. **Persistent/warm start:** Keep model loaded across requests — eliminates load time entirely
-3. **Combine CP=16 + persistent:** Projected per-request time ~240s (denoising 203s + text 22s + VAE 35s) = **4 min**
+3. **Combine copy_() + persistent:** Projected per-request time ~240s (denoising 203s + text 22s + VAE 35s) = **4 min**
+
+### replace_weights() SIGSEGV — Root Cause and Workaround
+
+**Root Cause:** `NxDModel.replace_weights()` assigns new tensor objects to the weights dict, then calls `initialize()`. The C++ SPMDModel holds raw pointers to the original weight tensors. When new tensors are assigned (old tensors garbage-collected), `initialize()` reads freed memory → SIGSEGV.
+
+**Workaround:** Use `tensor.copy_()` for in-place weight replacement:
+```python
+# Instead of: nxd_model.replace_weights(new_checkpoints)
+for rank in range(world_size):
+    for key in new_checkpoints[rank]:
+        nxd_model.weights[rank][key].copy_(new_checkpoints[rank][key])
+# Next forward pass reads new weights immediately — no to_neuron() needed
+```
+
+**Key findings (SDK 2.29.1, trn2.3xlarge):**
+- `copy_()` is bit-exact identical to `replace_weights()` (max diff = 0.0)
+- `copy_()` only: 87ms/expert (no re-init needed, NEFF reads CPU tensor via DMA)
+- `replace_weights()`: 142ms/expert (1.63x slower, and crashes at world_size > 4)
+- The crash is NOT scale-dependent — reproducible at world_size=4 with new tensor assignment
 
 ## Files
 
