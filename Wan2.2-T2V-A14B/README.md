@@ -67,11 +67,52 @@ Measured on trn2.48xlarge (16 NeuronDevices, 64 NeuronCores with LNC=2) with Neu
 
 GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
 
+### Single-Process with copy_() Expert Swap (Production Target)
+
+Measured on trn2.48xlarge with the copy_() workaround for in-place expert swapping:
+
+| Phase | Time |
+|-------|------|
+| Weight loading (both experts) | 49.9s |
+| Model initialization (64 cores) | 90.8s |
+| Expert 1 denoise (20 steps, sequential CFG) | 100.8s |
+| Expert swap via copy_() | 64.1s |
+| Expert 2 denoise (20 steps, sequential CFG) | 101.0s |
+| **Total denoising time** | **265.96s** |
+
+- **Per-step average:** 5047ms (2 sequential forward passes for CFG)
+- **Per forward pass:** 2520ms (batch=1, single direction)
+- **Expert swap:** 64.1s (copy_() across 64 ranks, ~1ms per tensor × ~64K tensors)
+- **Denoising only (no swap):** 201.8s (~3.4 min)
+
+### Performance Profiling (Per Forward Pass Breakdown)
+
+Profiled with `neuron-profile inspect` on trn2.48xlarge:
+
+| Component | Time | % |
+|-----------|------|---|
+| **Compute (matmul + attention + norms)** | 2164ms | 87.3% |
+| **Collective communication (TP + CP)** | 315ms | 12.7% |
+| **Total forward pass** | **2480ms** | 100% |
+
+Per DiT block (40 blocks total):
+- Compute: 54.1ms/block
+- Collectives: 7.9ms/block (521 CC calls total, ~13/block)
+- Total: 62.0ms/block
+
+**Model characteristics:**
+- Total MACs: 57.9 TFLOPs (full model, single core share)
+- Arithmetic Intensity: 1840-3089 (extremely compute-bound)
+- NKI Flash Attention: Enabled (376 kernel instances)
+- The compiler identifies this as a **compute-bound graph** (AIF >> 1)
+
 ### Further Optimization Paths
 
 1. **`copy_()` expert swap (SOLVED):** Use `tensor.copy_()` to swap expert weights in-place without re-initialization. Eliminates subprocess overhead (~179s per expert load). See `repro_replace_weights.py` for details.
-2. **Persistent/warm start:** Keep model loaded across requests — eliminates load time entirely
-3. **Combine copy_() + persistent:** Projected per-request time ~240s (denoising 203s + text 22s + VAE 35s) = **4 min**
+2. **Batch=2 compilation:** Compile with `batch_size=2` to use batched CFG — single forward pass handles both cond+uncond. Saves ~2480ms per step (40 steps × 2.48s = 99s saved).
+3. **Persistent/warm start:** Keep model loaded across requests — eliminates 141s init overhead
+4. **Reduce swap overhead:** Current 64s for expert swap could be reduced by only swapping differing weights (both experts share architecture, differ only in trained parameters)
+5. **NKI kernel optimization:** Limited opportunity — model is 87% compute-bound with AIF > 1840. The main bottleneck is raw matmul throughput, not memory or kernel efficiency.
 
 ### replace_weights() SIGSEGV — Root Cause and Workaround
 
@@ -99,6 +140,10 @@ for rank in range(world_size):
 | `wan22_t2v_a14b_trn2.ipynb` | Source notebook (no outputs) |
 | `wan22_t2v_a14b_trn2_executed.ipynb` | Executed notebook with all outputs |
 | `worker_denoise.py` | Subprocess worker for expert denoising |
+| `run_e2e_single_process.py` | Single-process E2E with copy_() expert swap |
+| `repro_replace_weights.py` | SIGSEGV reproducer with root cause documentation |
+| `run_e2e_cp16_bs2.py` | Subprocess-based E2E (old approach) |
+| `tickets/` | Filed ticket artifacts (V2223857084) |
 
 ## Quick Start
 
