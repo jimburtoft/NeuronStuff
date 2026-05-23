@@ -1,0 +1,49 @@
+{
+  "approach": "img2img_upscale",
+  "description": "Generate 1K -> upscale -> tiled VAE encode -> partial noise (strength=0.35) -> tiled denoise (18 steps) -> tiled VAE decode",
+  "instance": "trn2.3xlarge",
+  "sdk": "2.29",
+  "venv": "/opt/aws_neuronx_venv_pytorch_2_9_nxd_inference/",
+  "prompt": "An astronaut riding a green horse",
+  "guidance_scale": 7.5,
+  "num_steps_total": 50,
+  "num_steps_refine": 18,
+  "denoise_strength": 0.35,
+  "tile_latent_size": 128,
+  "tile_overlap": 32,
+  "results": {
+    "2048": {
+      "mean_s": 57.94,
+      "std_s": 0.02,
+      "n_seeds": 10,
+      "pass": "10/10",
+      "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51],
+      "n_tiles": 4,
+      "breakdown": {
+        "gen_1k_s": 13.3,
+        "upscale_encode_s": 1.4,
+        "tiled_denoise_s": 40.5,
+        "vae_decode_s": 2.7
+      }
+    },
+    "4096": {
+      "mean_s": 142.62,
+      "std_s": 0.01,
+      "n_seeds": 3,
+      "pass": "3/3",
+      "seeds": [42, 43, 44],
+      "n_tiles": 16,
+      "breakdown": {
+        "gen_1k_s": 13.3,
+        "upscale_encode_s": 5.6,
+        "tiled_denoise_s": 113.7,
+        "vae_decode_s": 10.0
+      }
+    }
+  },
+  "cost_per_hour_usd": 2.235,
+  "cost_per_image": {
+    "2048": 0.03597,
+    "4096": 0.08853
+  }
+}
