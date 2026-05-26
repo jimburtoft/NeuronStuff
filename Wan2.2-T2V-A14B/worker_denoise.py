@@ -57,38 +57,41 @@ def fix_norm_weights(sharded_weights, pipe_state_dict):
     """Fix norm_q/norm_k sharding mismatch.
 
     The compiler shards norm weights differently from attention weights.
-    This re-slices them from the unsharded pipeline state dict.
+    When checkpoints have full-size (5120) norm weights but the compiled
+    model expects TP-sharded norms (5120 // tp_degree), this function
+    slices them from the unsharded pipeline state dict.
     """
     hidden_size = 5120
     tp_degree = len(sharded_weights)
-    ideal_norm_size = hidden_size // tp_degree
-    expected_norm_size = None
+    ideal_norm_size = hidden_size // tp_degree  # 1280 for TP=4
+
+    # Check if norm weights need fixing
     for key in sharded_weights[0]:
         if "norm_q.weight" in key:
             actual_size = sharded_weights[0][key].shape[0]
-            if actual_size != ideal_norm_size and actual_size != hidden_size:
-                expected_norm_size = actual_size
+            if actual_size == ideal_norm_size:
+                # Already correctly sharded
+                return
             break
-    if expected_norm_size is None:
+    else:
         return
+
+    # Target size is ideal_norm_size (hidden_size // tp_degree)
+    expected_norm_size = ideal_norm_size
 
     unsharded_norms = {}
     for key, value in pipe_state_dict.items():
         if "norm_k.weight" in key or "norm_q.weight" in key:
             unsharded_norms[f"transformer.{key}"] = value.clone()
 
-    norm_tp = (
-        unsharded_norms[list(unsharded_norms.keys())[0]].shape[0] // expected_norm_size
-    )
     fixed = 0
     for rank in range(tp_degree):
-        norm_rank = rank % norm_tp
         for norm_key, full_weight in unsharded_norms.items():
             if (
                 norm_key in sharded_weights[rank]
                 and sharded_weights[rank][norm_key].shape[0] != expected_norm_size
             ):
-                start = norm_rank * expected_norm_size
+                start = rank * expected_norm_size
                 sharded_weights[rank][norm_key] = (
                     full_weight[start : start + expected_norm_size]
                     .to(sharded_weights[rank][norm_key].dtype)
