@@ -168,6 +168,103 @@ Choose a larger inf2 size only if the *host* needs the extra vCPU or RAM for co-
 -- client-side tokenization, retrieval, business logic -- or if you need more than one
 Inferentia2 device. Do not size up for the model itself.
 
+## Compile once, deploy to many
+
+The two expensive steps in the Triton notebooks -- compiling the five bucket graphs
+(~20-25 min) and building Triton from source (~25-40 min) -- are **pure host-side work**. A
+compiled graph depends on the *target device*, not on the host that produced it, so you can do
+both once and reuse the artifacts across a fleet.
+
+This also gives you **deploy-only instances that never run the compiler**, and therefore need
+no swap.
+
+### What transfers
+
+| Artifact | Size | Must match on the consumer |
+|---|---|---|
+| `model_bs{1,2,4,8,16}.pt` | ~3.3 GB | Neuron SDK version, instance family, `seq_len`, compiler flags |
+| `triton-neuron-bert-reranker:sdk231` image | ~6 GB gzipped | nothing device-specific |
+
+**Hard constraints** -- violate one and the graph either fails at `nrt_load` or misbehaves:
+
+- **Same Neuron SDK.** Build and serve on the same DLAMI (`20260813`, SDK 2.31).
+- **Same instance family.** inf2.xlarge <-> inf2.8xlarge is fine (identical Inferentia2
+  device). **inf2 -> trn2 is not** -- recompile, and note trn2 also bakes in the LNC mode.
+- **Same `seq_len` and bucket list.** Both are baked into the graphs, and `config.pbtxt` is
+  generated from the bucket list.
+
+**Verified for this model:** a mixed-provenance model repository -- BS=16 compiled locally,
+BS=1/2/4/8 compiled on a *different* instance and pulled from S3 -- served correctly and passed
+the accuracy gate (cosine 0.999999), the bit-exact padding-isolation check, and ranking
+stability across every bucket.
+
+### Producer -- run once
+
+Complete Step 1 (compile) and Step 4 (image build) in the notebook, then:
+
+```bash
+BUCKET=s3://YOUR_BUCKET/bert-reranker
+
+# five compiled graphs (~3.3 GB)
+tar -C ~/triton_repo/bert_reranker/1 -czf /tmp/neffs.tar.gz .
+aws s3 cp /tmp/neffs.tar.gz $BUCKET/neffs.tar.gz
+
+# the Triton image (~6 GB gzipped)
+docker save triton-neuron-bert-reranker:sdk231 | gzip > /tmp/triton-img.tar.gz
+aws s3 cp /tmp/triton-img.tar.gz $BUCKET/triton-img.tar.gz
+```
+
+Record which SDK you built on; consumers must match it.
+
+### Consumer -- on each additional instance
+
+In `bert_reranker_triton_inf2_xlarge_sdk231.ipynb`:
+
+1. Run **Step 0** (environment check). Swap is not needed if you will not compile.
+2. Run the **shared-configuration cell** (just above Step 1). **Required** -- Step 1-alt reads
+   `MODEL_DIR`, `BATCH_SIZES` and `DOCKER_IMAGE` from it.
+3. **Skip the compile cell.**
+4. In **Step 1-alt**, set `USE_S3_ARTIFACTS = True` and `S3_PREFIX`, then run it. It downloads
+   the graphs, verifies every expected bucket is present, and `docker load`s the image.
+5. Continue from the accuracy gate onward. Step 4 detects the loaded image and skips the build.
+
+Needs an instance role with `s3:GetObject` on the bucket.
+
+Or without the notebook, on a bare instance:
+
+```bash
+mkdir -p ~/triton_repo/bert_reranker/1
+aws s3 cp s3://YOUR_BUCKET/bert-reranker/neffs.tar.gz /tmp/
+tar -C ~/triton_repo/bert_reranker/1 -xzf /tmp/neffs.tar.gz
+
+aws s3 cp s3://YOUR_BUCKET/bert-reranker/triton-img.tar.gz /tmp/
+gunzip -c /tmp/triton-img.tar.gz | docker load
+
+# config.pbtxt and model.py come from Step 2 of the notebook; copy them alongside,
+# then serve:
+docker run -d --name triton-bert-reranker \
+  --device /dev/neuron0 --shm-size=4g \
+  -p 8000:8000 -p 8001:8001 -p 8002:8002 \
+  -v ~/triton_repo:/models \
+  -e NEURON_RT_LOG_LEVEL=ERROR \
+  triton-neuron-bert-reranker:sdk231 \
+  tritonserver --model-repository=/models --log-verbose=0 --exit-on-error=true
+
+# Model load plus per-bucket warmup takes a couple of minutes. Poll /ready — not the
+# bare model endpoint, which can report before the instances are actually up.
+until curl -sf localhost:8000/v2/models/bert_reranker/ready; do sleep 10; done
+echo READY
+```
+
+### A caveat on true cross-compilation
+
+The above is **artifact transfer**: compiling on an inf2 host *for* inf2. Compiling on a host
+with **no Neuron device** (via `NEURON_PLATFORM_TARGET_OVERRIDE`) is a different and riskier
+proposition. In separate testing on the XLA path, an artifact produced that way ran its first
+forward pass correctly and then **hung indefinitely on the second** -- a failure invisible to
+any single-inference smoke test. If you cross-compile on a non-Neuron host, validate with
+**repeated** forward passes.
+
 ## Two findings worth knowing before you deploy
 
 ### 1. SDK 2.31 regresses trn2 throughput up to 25% — root-caused to the compiler
