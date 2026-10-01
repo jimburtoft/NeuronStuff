@@ -13,11 +13,18 @@ extrapolated, or simulated.
 
 | Notebook | Platform | Peak throughput |
 |---|---|---|
-| `bert_reranker_triton_inf2_sdk231.ipynb` | inf2.8xlarge, Triton, 2 instances | **157.4 inf/s** |
+| `bert_reranker_triton_inf2_xlarge_sdk231.ipynb` | **inf2.xlarge**, Triton, 2 instances | **154.8-156.7 inf/s** |
+| `bert_reranker_triton_inf2_sdk231.ipynb` | inf2.8xlarge, Triton, 2 instances | 157.4 inf/s |
 | `bert_reranker_triton_trn2_lnc1_sdk231.ipynb` | trn2.3xlarge, Triton, LNC=1, 8 instances | **517.1 inf/s** |
 
 `*_executed.ipynb` are the same notebooks with real output from a full
-`jupyter nbconvert --execute` run (0 errors across all 24 cells on both platforms).
+`jupyter nbconvert --execute` run (0 errors in every cell on all three platforms).
+
+> **Use `inf2.xlarge`, not `inf2.8xlarge`.** They expose the **same accelerator** -- one
+> Inferentia2 device, 2 NeuronCores, 32 GB -- and measure within 0.9% of each other, which is
+> inside run-to-run noise. inf2.xlarge costs **$0.7582/hr vs $1.9679/hr**, so it delivers
+> **2.57x the throughput per dollar**. The larger size only adds host vCPU and RAM, which this
+> workload does not use. See [Instance sizing](#instance-sizing-use-inf2xlarge) below.
 
 ### Earlier — Neuron SDK 2.27/2.28
 
@@ -44,7 +51,7 @@ torch_neuronx.trace(
 
 ### Flag A/B results
 
-Measured on inf2.8xlarge, SDK 2.31, single core, BS=16, seq_len=1024:
+Measured on inf2 (SDK 2.31), single core, BS=16, seq_len=1024:
 
 | Variant | qps | Verdict |
 |---|---|---|
@@ -77,14 +84,89 @@ Benchmark methodology on both platforms: threaded workers, 10 s per configuratio
 
 | Platform | Instances | Peak | Best under 100 ms P50 |
 |---|---|---|---|
-| inf2.8xlarge | 2 | 157.4 inf/s (BS=1, 32 workers) | **155.1 inf/s @ 50.91 ms** |
+| **inf2.xlarge** | 2 | **156.1 inf/s** (BS=1, 32 workers) | **152.8 inf/s @ 39.76 ms** |
+| inf2.8xlarge | 2 | 157.4 inf/s (BS=1, 32 workers) | 155.1 inf/s @ 50.91 ms |
 | trn2.3xlarge LNC=1 | 8 | **517.1 inf/s** (BS=4, 64 workers) | **511.1 inf/s @ 63.76 ms** |
 
 trn2 delivers **3.3x the throughput of inf2** at comparable latency.
 
+On inf2, **throughput peaks at BS=1 with high client concurrency**, so server-side dynamic
+batching does the batching work and clients can stay simple. Note that chasing the peak is
+usually the wrong call: **152.8 inf/s at 39.76 ms** versus 154.8 inf/s at 102.56 ms means the
+last **1.3%** of throughput costs **2.6x the latency**. Across runs that tradeoff ranged from
+2.6x to 3.8x, always for under 2% throughput, so **BS=1 with 8 workers is the recommended
+operating point** -- roughly **$1.38 per million inferences**.
+
 Accuracy on both platforms: cosine 0.999999, Spearman 1.0000 vs CPU FP32, top-3 passages
 exact, padding isolation bit-exact across all batch buckets, and ranking identical across
 buckets.
+
+## Instance sizing: use `inf2.xlarge`
+
+All earlier work in this directory used **inf2.8xlarge**. That was the wrong size for this
+model, and the measurements say so plainly.
+
+**Both instance types expose exactly the same accelerator.** `neuron-ls` on each reports
+1 Inferentia2 device, **2 NeuronCores, 32 GB** of device memory. The larger sizes add host
+vCPU and RAM (and, from `inf2.24xlarge` up, additional devices) -- none of which a
+single-device workload like this reranker uses.
+
+Same notebook, same compile flags, same 2-instance topology, same benchmark harness:
+
+| Metric | inf2.8xlarge | inf2.xlarge | Delta |
+|---|---|---|---|
+| Peak throughput | 157.4 inf/s | **156.1 inf/s** | **-0.9%** (within noise) |
+| Peak, best of 4 runs | 157.4 inf/s | 156.7 inf/s | -0.4% |
+| Peak configuration | BS=1, 32 workers | BS=1, 32 workers | identical |
+| Best under 100 ms P50 | 155.1 @ 50.91 ms | **152.9 @ 50.93 ms** | -1.4% |
+| NeuronCores | 2 | 2 | — |
+| vCPU | 32 | 4 | -87.5% |
+| Host RAM | 128 GB | 16 GB | -87.5% |
+| On-demand $/hr (us-east-2) | $1.9679 | **$0.7582** | **-61.5%** |
+| **inf/s per $/hr** | 80.0 | **205.8** | **+157.3%** |
+
+**Four independent full runs on two inf2.xlarge instances in two regions** (us-east-2 and
+us-west-2) peaked at **156.7 / 156.5 / 156.1 / 154.8 inf/s** -- a ~1.2% spread. The -0.9% gap
+versus inf2.8xlarge is inside that noise band. The final run was a **completely cold
+reproduction**: fresh instance, no prebuilt artifacts, 80.5 min end to end.
+
+### The workload is device-bound, which is why the small host costs nothing
+
+Both host CPU and Neuron device utilization were sampled during every benchmark configuration:
+
+| | inf2.xlarge |
+|---|---|
+| Neuron device utilization | **94-95% avg** (>= 96% in most configurations) |
+| Host CPU utilization | **~54% avg**, 57% peak, on 4 vCPU |
+
+Both NeuronCores run at 96-100% while the 4 vCPU host sits around half idle. The intuition
+that 4 vCPU would starve the Triton Python backend is **wrong for this model** -- and the real
+margin is wider than it looks, because the benchmark client was running on those same 4 vCPU.
+A deployment with an off-box client has more headroom still.
+
+### What the smaller host does cost
+
+| | inf2.8xlarge (32 vCPU) | inf2.xlarge (4 vCPU) |
+|---|---|---|
+| Triton source build | 11.3 min | **26-38 min** |
+| BS=16 compile, peak host RSS | — | **14.75-14.77 GB** (+1.5-1.7 GB swap) |
+| Full notebook, cold start | — | **80.5 min** |
+
+- **The Docker build is 2-3x slower, not 8x.** Git clones, downloads and single-threaded
+  CMake configure do not scale with core count. Measured 26.5 min and 38.4 min on two
+  instances -- the spread is network/EBS variability, not compute. A reasonable one-time cost,
+  so building on inf2.xlarge is practical.
+- **Compilation requires swap** -- see [Requirements](#requirements). This is the one genuine
+  constraint of the 16 GB host, and the notebook handles it automatically.
+
+### Recommendation
+
+Use **inf2.xlarge**. Same accelerator, same throughput, same latency, same accuracy (cosine
+0.999999, Spearman 1.0000), **2.57x better throughput per dollar**.
+
+Choose a larger inf2 size only if the *host* needs the extra vCPU or RAM for co-located work
+-- client-side tokenization, retrieval, business logic -- or if you need more than one
+Inferentia2 device. Do not size up for the model itself.
 
 ## Two findings worth knowing before you deploy
 
@@ -226,6 +308,27 @@ variable into containers explicitly with `-e` (it is not inherited from `/etc/en
    (bit-exact), cross-graph agreement, and **ranking stability across buckets**.
 8. Poll `/v2/models/{name}/ready` rather than the bare model endpoint; use `shutil.copytree`
    rather than symlinks (symlinks do not resolve across Docker volume mounts).
+9. **Host CPU and Neuron device utilization sampled per benchmark configuration**, so the
+   bottleneck is identified from measurement rather than assumed.
+
+### Measuring device utilization from a containerized deployment
+
+Getting `neuron-monitor` to report real numbers against a Triton container took three fixes.
+Each failure mode returns a confident, plausible **0.0%**, so none of them announces itself:
+
+1. **It must run inside the container.** The Neuron runtime lives in the container, so
+   host-side `neuron-monitor` returns `neuron_runtime_data: []` -- it reports the hardware
+   inventory correctly while seeing no runtime at all. Use `docker exec`.
+2. **Discard the first sample.** The initial report has no previous interval to diff against
+   and is always 0. Reading `stdout.splitlines()[0]` -- the obvious choice -- reports 0%
+   utilization while both cores are saturated.
+3. **Take the max per core, not the mean of everything.** Each Triton instance is its own
+   Neuron runtime pinned to one core, and every runtime reports `0` for the cores it does not
+   own. Averaging all the values halves the result.
+
+Also note that on SDK 2.31 `neuron-monitor` takes `-c <config.json>`; there is **no**
+`--sample-interval` or `--count` flag, and passing one **exits 0** with `unknown flag` on
+stderr -- a silent no-op if you are not checking return values.
 
 ### A note on batch consistency
 
@@ -247,12 +350,15 @@ A single combined assertion at a tight tolerance would fail on correct code.
 
 ## Requirements
 
-- **inf2.8xlarge** (2 NeuronCores) or **trn2.3xlarge** (8 logical cores at LNC=1)
+- **inf2.xlarge** (2 NeuronCores -- recommended, see [Instance sizing](#instance-sizing-use-inf2xlarge))
+  or **trn2.3xlarge** (8 logical cores at LNC=1)
 - **Deep Learning AMI Neuron (Ubuntu 24.04) 20260813** or later (Neuron SDK 2.31)
 - Docker
 - ~300 GB disk (Triton image plus five compiled graphs)
-- **Swap is required before compiling.** The DLAMI ships with none and `neuronx-cc` can use
-  40-45 GB of host RAM per graph:
+- **Swap is required before compiling.** The DLAMI ships with none. On inf2.xlarge the
+  BS=16 compile peaks at **14.75 GB RSS on a 15 GB host**, so without swap `neuronx-cc` is
+  OOM-killed -- and the error names the compiler, not memory. (An instance that only *loads*
+  prebuilt graphs never runs the compiler and does not need swap.)
   ```bash
   sudo dd if=/dev/zero of=/swapfile bs=1M count=65536
   sudo chmod 600 /swapfile
@@ -274,7 +380,11 @@ benchmarks, and cleans up.
 
 ## Test environment
 
-All measurements taken 2026-09-30 on Neuron SDK 2.31 (DLAMI `20260813`): neuronx-cc
-`2.26.6360.0`, torch-neuronx `2.9.0.2.15.32035`, torch 2.9.1, transformers 4.57.6,
-Triton Inference Server `r26.01` (python backend, built from source on the Neuron PyTorch
-inference image).
+All measurements taken on Neuron SDK 2.31 (DLAMI `20260813`): neuronx-cc `2.26.6360.0`,
+torch-neuronx `2.9.0.2.15.32035`, torch 2.9.1, transformers 4.57.6, Triton Inference Server
+`r26.01` (python backend, built from source on the Neuron PyTorch inference image).
+
+- inf2.8xlarge and trn2.3xlarge results: **2026-09-30**
+- inf2.xlarge results: **2026-10-01** (two instances, us-east-2 and us-west-2)
+
+All instances have been terminated.
