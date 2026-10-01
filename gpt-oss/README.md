@@ -1,6 +1,8 @@
 # Running GPT-OSS-20B on Trainium2 with vLLM + vllm-neuron (Neuron SDK 2.32)
 
-Tested and working **2026-09-30** on a `trn2.3xlarge` using the **Neuron SDK 2.32 DLAMI (20260818)**.
+Tested and working **2026-10-01** on a `trn2.3xlarge` using the **Neuron SDK 2.32 DLAMI (20260818)**.
+The `gpt_oss_run.py` in this directory was run verbatim, as downloaded from this repo, on a fresh
+instance.
 
 GPT-OSS does **not** run out of the box on Trainium2. The stock invocation fails in about 9 seconds.
 It needs **three configuration changes**, documented below. The good news: all three are
@@ -197,8 +199,9 @@ supported segmented prefill size [512, 1024, 2048, 4096, 8192] to auto-enable se
 
 In vLLM 0.24, both `enable_prefix_caching` and `enable_chunked_prefill` default to `True`, but the
 default `max_num_batched_tokens` is not one of the supported segmented-prefill sizes — so the two
-defaults contradict each other. Pick a value from that list. `max_num_batched_tokens` must be at
-least as large as your longest prompt.
+defaults contradict each other. Pick a value from that list. The value also bounds how many tokens are
+processed per prefill step, so choose one comfortably above your typical prompt length (2048 was used
+for the testing here; we did not probe the behaviour of a prompt longer than the chosen bucket).
 
 ---
 
@@ -259,6 +262,17 @@ Sample generation:
 Batching works correctly — no cross-request contamination. These numbers are from an untuned
 configuration; they are a correctness check, not a benchmark.
 
+**You will see a traceback at the very end. Ignore it.** After all output has printed, vLLM's
+shutdown path calls `torch.accelerator.empty_cache()`, which has no Neuron implementation:
+
+```
+RuntimeError: device_allocator INTERNAL ASSERT FAILED at ".../CachingDeviceAllocator.h":252,
+please report a bug to PyTorch. Allocator for neuron is not a DeviceAllocator.
+```
+
+This happens *after* generation completes and the process still exits **0**. It is cosmetic. Check
+for your generated text above it rather than reacting to the traceback.
+
 ---
 
 ## Notes and gotchas
@@ -300,6 +314,7 @@ vllm-neuron >= 0.24.
 | `Automatic Prefix Caching (APC) requires segmented prefill` | Change 3 — `max_num_batched_tokens` |
 | `nrt_tensor_allocate status=4` during load | Use `tensor_parallel_size=4` |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
+| `device_allocator INTERNAL ASSERT FAILED ... Allocator for neuron` at exit | Cosmetic — happens after generation, exit code is still 0 |
 
 ---
 
