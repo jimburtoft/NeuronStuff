@@ -52,7 +52,7 @@ Measured on inf2.8xlarge, SDK 2.31, single core, BS=16, seq_len=1024:
 | **+ `attn_implementation="eager"`** | **67.62** | **+11.4% — adopt** |
 | + `inline_weights_to_neff=True` | 67.59 | no-op on SDK 2.31 (already default) |
 | − `--optlevel 2` | 67.52 | no-op (`-O2` is the compiler default) |
-| − `--model-type transformer` | 52.70 | **keep the flag: it is worth +28%** |
+| − `--model-type transformer` | 52.70 | **keep on inf2: worth +28%.** On trn2 it is -1.2% — drop it there |
 
 Notes on two of these:
 
@@ -63,6 +63,9 @@ Notes on two of these:
 - **`inline_weights_to_neff=True` is already the default in torch-neuronx 2.15.** Passing it
   produced a **byte-identical NEFF (710.9 MB either way)**. It mattered on older SDKs, so
   keep it if you target those.
+- **`--model-type transformer` is platform-specific.** It is worth **+28% on inf2** but
+  **-1.2% on trn2** (measured on both). Keep it for inf2; drop it for trn2. Do not assume a
+  flag's sign transfers across platforms — A/B it.
 
 All variants held accuracy: **cosine >= 0.999998** vs a CPU FP32 reference, with passage
 ranking preserved in every case.
@@ -85,24 +88,101 @@ buckets.
 
 ## Two findings worth knowing before you deploy
 
-### 1. SDK 2.31 is slower than SDK 2.27/2.28 on this model
+### 1. SDK 2.31 regresses trn2 throughput up to 25% — root-caused to the compiler
 
-Single core, BS=16, seq_len=1024:
+Single core, seq_len=1024:
 
-| Platform | SDK 2.27/2.28 | SDK 2.31 | Delta |
+| Platform | BS | SDK 2.27/2.28 | SDK 2.31 | Delta |
+|---|---|---|---|---|
+| inf2.8xlarge | 16 | 74.58 qps | 67.62 qps | -9.4% |
+| trn2.3xlarge LNC=1 | 16 | 83.64 qps | 60.29 qps | **-27.9%** |
+| trn2.3xlarge LNC=2 | 16 | 51.31 qps | 45.89 qps | -10.6% |
+
+#### It is `neuronx-cc`, and it entered in one release
+
+Bisect on trn2.3xlarge with the **host driver and runtime held constant** (dkms `2.29.0.0`,
+runtime-lib `2.33.10.0`), varying only the compiler and framework, BS=16, seq=1024:
+
+| SDK | neuronx-cc | qps | p50 | vs 2.28 |
+|---|---|---|---|---|
+| 2.28 | 2.22.12471 | **83.39** | 191.87 ms | — |
+| 2.29 | 2.24.5133 | 81.41 | 196.53 ms | -2.4% |
+| 2.30 | 2.25.3371 | 81.59 | 196.11 ms | -2.2% |
+| 2.31 | 2.26.6360 | **61.01** | 262.26 ms | **-26.8%** |
+
+Two things follow. **The runtime and driver are not at fault** — the SDK 2.28 compiler
+reproduces the original 83.39 qps while running on the SDK 2.31 driver and runtime. And it is a
+**cliff, not a drift**: 2.28→2.30 costs 2%, while 2.30→2.31 alone costs **25.2%**.
+
+Compiler flags are also not the cause. Reproducing the February 2026 flag set exactly
+(`--optlevel=2 --target trn2 --lnc 1 --auto-cast matmult`, transformers 4.53.3, same
+warmup/iteration counts and timer) on SDK 2.31 still gives 61.01 qps. Across six flag
+combinations the total spread is **1.2%**.
+
+#### Mechanism: ~2x memory traffic for byte-identical compute
+
+Hardware profiles (`neuron-explorer`) of the 2.30 and 2.31 NEFFs:
+
+| | 2.30 | 2.31 | Delta |
 |---|---|---|---|
-| inf2.8xlarge | 74.58 qps | 67.62 qps | **-9.4%** |
-| trn2.3xlarge LNC=1 | 83.64 qps | 60.29 qps | **-27.9%** |
-| trn2.3xlarge LNC=2 | 51.31 qps | 45.89 qps | -10.6% |
+| model_flops | 4.33 T | 4.33 T | +0.0% |
+| matmul instructions | 665,302 | 665,593 | +0.0% |
+| Tensor engine active | 133.25 ms | 124.27 ms | **-6.7% (faster)** |
+| **DMA active time** | **95.32 ms** | **186.88 ms** | **+96.0%** |
+| HBM writes | 10.69 GB | 27.01 GB | **+152.6%** |
+| HBM reads | 17.79 GB | 32.66 GB | +83.6% |
+| Arithmetic intensity | 144.26 | 68.64 | **-52.4%** |
+| `mfu_max_achievable` | 100% | 66.06% | **-33.9%** |
 
-This is a genuine SDK difference, not a library artifact: pinning `transformers==4.48.0` (the
-exact version the original numbers used) on SDK 2.31 still measured 67.58 qps on inf2. Both
-variables are controlled.
+The compute is unchanged and the Tensor engine is actually *faster*. Wall clock grew 66.5 ms
+while **DMA active time grew 91.6 ms**, so data movement more than fully accounts for the
+regression. Extra HBM reads (+14.9 GB) nearly equal extra HBM writes (+16.3 GB) — a ratio of
+**0.91**, the signature of values being spilled to HBM and read back rather than kept on-chip.
+Average DMA transfer is only 2.3–2.6 KB, far below the ~32 KiB size where DMA is efficient.
 
-**Under Triton most of the regression absorbs** — inf2 -2.4% and trn2 -7.1% peak throughput,
-versus -9.4% and -27.9% single core. With all cores saturated by dynamic batching, the
-per-graph loss is largely hidden. **Use the Triton numbers to reason about deployment impact,
-not the single-core numbers.**
+Per-engine instruction-binary sizes corroborate a scheduling change rather than a math change:
+Tensor **+0.0%**, Activation **+24.3%**, Sync **+89.8%**, Pool **-62.9%**.
+
+The likely cause is the redesigned NIR code-generation backend ("narwhal") that SDK 2.31 made
+the default **on Trn2 and Trn3** — which fits the Trn2-specific severity, the single-release
+cliff, and a memory-scheduling symptom. We could not verify this directly: the
+`--disable-narwhal` switch exists inside the compiler but is **not reachable** from the
+`neuronx-cc` CLI, from `--tensorizer-options`, or from any environment variable in this build.
+
+#### The penalty scales with batch size
+
+| BS | 2.30 qps | 2.31 qps | Delta |
+|---|---|---|---|
+| 1 | 88.52 | 86.56 | **-2.2%** |
+| 2 | 84.70 | 77.86 | -8.1% |
+| 4 | 83.58 | 73.83 | -11.7% |
+| 8 | 80.35 | 66.91 | -16.7% |
+| 16 | 81.57 | 61.00 | **-25.2%** |
+
+Larger batches mean larger activation working sets, so a schedule that keeps less on-chip
+spills progressively more — further supporting the spill diagnosis, since neither a fixed
+per-call overhead nor a uniformly worse kernel would produce this shape.
+
+This also reconciles the single-core and server numbers: the Triton deployment peaks at
+**BS=4**, where the penalty is only -11.7%, and multi-instance saturation hides part of even
+that. End-to-end Triton loss was **-7.1%** (556.9 → 517.1 inf/s) on trn2 and **-2.4%** on inf2.
+
+#### Workaround
+
+If you run **large batches on trn2**, pin the compiler to SDK 2.30 and leave everything else
+on SDK 2.31. This recovers **+33.7%** at BS=16 with identical accuracy (cosine 0.999996,
+top-3 unchanged):
+
+```bash
+pip install --index-url https://pip.repos.neuron.amazonaws.com \
+    "neuronx-cc==2.25.3371.0+f524f7f8" "torch-neuronx==2.9.0.2.14.27725+e2ff0410"
+```
+
+Recovery by batch size: +2.3% (BS=1), +8.8% (BS=2), +13.2% (BS=4), +20.1% (BS=8),
++33.7% (BS=16). **A BS=1, latency-oriented deployment should stay on the stock SDK 2.31
+compiler** — there is almost nothing to recover and you would be giving up newer fixes.
+
+Reproduction scripts and raw profile data are available on request.
 
 ### 2. LNC=1 for throughput, LNC=2 for latency (trn2)
 
