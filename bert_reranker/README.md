@@ -322,11 +322,38 @@ Average DMA transfer is only 2.3–2.6 KB, far below the ~32 KiB size where DMA 
 Per-engine instruction-binary sizes corroborate a scheduling change rather than a math change:
 Tensor **+0.0%**, Activation **+24.3%**, Sync **+89.8%**, Pool **-62.9%**.
 
-The likely cause is the redesigned NIR code-generation backend ("narwhal") that SDK 2.31 made
-the default **on Trn2 and Trn3** — which fits the Trn2-specific severity, the single-release
-cliff, and a memory-scheduling symptom. We could not verify this directly: the
-`--disable-narwhal` switch exists inside the compiler but is **not reachable** from the
-`neuronx-cc` CLI, from `--tensorizer-options`, or from any environment variable in this build.
+#### Cause: the new NIR codegen, but only on large monolithic graphs
+
+SDK 2.31 made a redesigned NIR code-generation backend ("narwhal") the default **on Trn2 and
+Trn3**. The compiler's own debug log confirms it runs on 2.31 and not on 2.30 — with
+`--logfile-verbose=debug`, the 2.31 log contains `Running narwhal`, `BIRToNIR`, and
+`narwhal finished after 42.121 seconds`, while the 2.30 log contains none of those lines.
+
+**But narwhal is not broadly at fault.** Running the same 2.30→2.31 compiler step on
+**PyTorch Native** — where this model is compiled as many small subgraphs instead of one
+monolithic graph — costs only **-0.7%** (53.55 → 53.17 qps), even though the logs confirm
+narwhal engages there too:
+
+| path | graph shape | cc 2.25 | cc 2.26 | delta |
+|---|---|---|---|---|
+| `torch_neuronx.trace()` | 1 monolithic graph, ~1.3M instructions | 81.64 qps | 61.06 qps | **-25.2%** |
+| `torch.compile(backend="neuron")` | many small subgraphs | 53.55 qps | 53.17 qps | **-0.7%** |
+
+So the regression is an **interaction between the new codegen and a single large graph**
+(the trace path hands the compiler one ~1.3M-instruction, 33.7 MB HLO), not a general property
+of narwhal. Practical implication: **the severity depends on how your graph is partitioned**,
+so measure your own model rather than assuming either the 25% or the 0.7% figure applies.
+
+We could not test this by toggling the codegen: `--disable-narwhal` exists inside the compiler
+but is **not reachable** from the `neuronx-cc` CLI, from `--tensorizer-options`, or from any
+environment variable in this build.
+
+Caveat on the comparison: the two 2.25 builds differ (2.25.3371 on trace, 2.25.1280 on Native —
+the only 2.25 builds publicly available on each path). Each within-path comparison is
+controlled, but the builds are not identical.
+
+Note also that PyTorch Native is substantially slower than trace in absolute terms on this
+model (53.6 vs 81.6 qps, -34%), so migrating paths is not a workaround for this regression.
 
 #### The penalty scales with batch size
 
