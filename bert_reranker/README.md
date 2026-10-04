@@ -11,14 +11,22 @@ extrapolated, or simulated.
 
 ### Current — Neuron SDK 2.31
 
-| Notebook | Platform | Peak throughput |
-|---|---|---|
-| `bert_reranker_triton_inf2_xlarge_sdk231.ipynb` | **inf2.xlarge**, Triton, 2 instances | **154.8-156.7 inf/s** |
-| `bert_reranker_triton_inf2_sdk231.ipynb` | inf2.8xlarge, Triton, 2 instances | 157.4 inf/s |
-| `bert_reranker_triton_trn2_lnc1_sdk231.ipynb` | trn2.3xlarge, Triton, LNC=1, 8 instances | **517.1 inf/s** |
+| Notebook | Platform | dtype | Peak throughput |
+|---|---|---|---|
+| **`bert_reranker_triton_trn2_bf16_lnc1_sdk231.ipynb`** | **trn2.3xlarge**, Triton, LNC=1, 8 instances | **full BF16** | **658.0 inf/s** |
+| **`bert_reranker_triton_inf2_bf16_sdk231.ipynb`** | **inf2.8xlarge**, Triton, 2 instances | **full BF16** | **179.0 inf/s** |
+| `bert_reranker_triton_inf2_xlarge_sdk231.ipynb` | inf2.xlarge, Triton, 2 instances | FP32 + auto-cast | 154.8-156.7 inf/s |
+| `bert_reranker_triton_inf2_sdk231.ipynb` | inf2.8xlarge, Triton, 2 instances | FP32 + auto-cast | 157.4 inf/s |
+| `bert_reranker_triton_trn2_lnc1_sdk231.ipynb` | trn2.3xlarge, Triton, LNC=1, 8 instances | FP32 + auto-cast | 517.1 inf/s |
+
+**Start with the two BF16 notebooks.** Casting the model to full BF16 (instead of FP32 weights
+with `--auto-cast matmult`) is the single largest lever on SDK 2.31: **+27.2% on trn2** and
+**+13.7% on inf2** at the deployment level, with accuracy held (cosine >= 0.999974 vs a CPU
+FP32 reference, correct top-3 ranking). The FP32 notebooks are kept for comparison. See
+[Recommended compilation](#recommended-compilation-sdk-231).
 
 `*_executed.ipynb` are the same notebooks with real output from a full
-`jupyter nbconvert --execute` run (0 errors in every cell on all three platforms).
+`jupyter nbconvert --execute` run (0 errors in every cell on every platform).
 
 > **Use `inf2.xlarge`, not `inf2.8xlarge`.** They expose the **same accelerator** -- one
 > Inferentia2 device, 2 NeuronCores, 32 GB -- and measure within 0.9% of each other, which is
@@ -42,16 +50,43 @@ model = AutoModelForSequenceClassification.from_pretrained(
     MODEL_ID, torchscript=True, trust_remote_code=True,
     attn_implementation="eager",                 # +11.4% - see below
 )
+model = model.to(torch.bfloat16)                 # full BF16 - see below
 torch_neuronx.trace(
     model, (input_ids, attention_mask),
-    compiler_args=["--model-type", "transformer",   # +28% - keep
-                   "--auto-cast", "matmult"],       # accuracy-safe
+    compiler_args=["--model-type", "transformer"],  # inf2: +28%. trn2: also add "--lnc", "1"
 )
 ```
 
+`--auto-cast` is omitted because it is a no-op on a BF16 model.
+
+### Full BF16 vs FP32 + `--auto-cast matmult`
+
+Single core, BS=16, seq_len=1024, `torch_neuronx.trace`:
+
+| Platform | dtype | neuronx-cc 2.25 (SDK 2.30) | neuronx-cc 2.26 (SDK 2.31) |
+|---|---|---|---|
+| trn2.3xlarge LNC=1 | FP32 + `--auto-cast matmult` | 81.72 qps | 61.06 qps |
+| trn2.3xlarge LNC=1 | **full BF16** | 79.37 qps | **79.57 qps** |
+| inf2.8xlarge | FP32 + `--auto-cast matmult` | 73.50 qps | 67.59 qps |
+| inf2.8xlarge | **full BF16** | 84.53 qps | **73.17 qps** |
+
+On the SDK 2.31 compiler, full BF16 is **+30.3% on trn2** and **+8.3% on inf2** over
+FP32 + `--auto-cast matmult`.
+
+On trn2 this also **removes the SDK 2.31 compiler regression entirely**: it exists only for the
+FP32 + `--auto-cast` program (-25.3%) and not for BF16 (+0.3%). See
+[finding 1](#1-sdk-231-regresses-trn2-throughput-up-to-25--root-caused-to-the-compiler). On
+inf2 the newer compiler is slower for **both** dtypes (-8.0% FP32, -13.4% BF16), so BF16 is the
+faster choice there but does not undo the version-to-version change.
+
+Accuracy of full BF16 on SDK 2.31 vs a CPU FP32 reference: cosine **0.999966** (trn2) /
+**0.999974** (inf2), correct top-3 ranking on both. That is numerically looser than
+FP32 + `--auto-cast` (0.999996) but ranking-safe.
+
 ### Flag A/B results
 
-Measured on inf2 (SDK 2.31), single core, BS=16, seq_len=1024:
+Measured on inf2 (SDK 2.31), single core, BS=16, seq_len=1024, FP32 weights +
+`--auto-cast matmult` (these A/Bs predate the BF16 change; the flags were not re-tested in BF16):
 
 | Variant | qps | Verdict |
 |---|---|---|
@@ -82,13 +117,28 @@ ranking preserved in every case.
 Benchmark methodology on both platforms: threaded workers, 10 s per configuration,
 5-request warmup, concurrency x batch-size sweep, reporting throughput and P50/P95/P99.
 
-| Platform | Instances | Peak | Best under 100 ms P50 |
-|---|---|---|---|
-| **inf2.xlarge** | 2 | **156.1 inf/s** (BS=1, 32 workers) | **152.8 inf/s @ 39.76 ms** |
-| inf2.8xlarge | 2 | 157.4 inf/s (BS=1, 32 workers) | 155.1 inf/s @ 50.91 ms |
-| trn2.3xlarge LNC=1 | 8 | **517.1 inf/s** (BS=4, 64 workers) | **511.1 inf/s @ 63.76 ms** |
+| Platform | dtype | Instances | Peak | Best under 100 ms P50 |
+|---|---|---|---|---|
+| **trn2.3xlarge LNC=1** | **full BF16** | 8 | **658.0 inf/s** (BS=2, 64 workers) | **656.9 inf/s @ 49.38 ms** |
+| trn2.3xlarge LNC=2 | full BF16 | 4 | 581.6 inf/s (BS=1, 64 workers) | 580.5 inf/s @ 59.14 ms |
+| trn2.3xlarge LNC=1 | FP32 + auto-cast | 8 | 517.1 inf/s (BS=4, 64 workers) | 511.1 inf/s @ 63.76 ms |
+| **inf2.8xlarge** | **full BF16** | 2 | **179.0 inf/s** (BS=1, 16 workers) | **179.0 inf/s @ 87.89 ms** |
+| inf2.8xlarge | FP32 + auto-cast | 2 | 157.4 inf/s (BS=1, 32 workers) | 155.1 inf/s @ 50.91 ms |
+| inf2.xlarge | FP32 + auto-cast | 2 | 156.1 inf/s (BS=1, 32 workers) | 152.8 inf/s @ 39.76 ms |
 
-trn2 delivers **3.3x the throughput of inf2** at comparable latency.
+**Full BF16 is the best configuration on both platforms**: **+27.2%** on trn2 (517.1 -> 658.0)
+and **+13.7%** on inf2.8xlarge (157.4 -> 179.0) at the deployment level. Both also **beat the
+pre-regression SDK 2.27/2.28 numbers** (556.9 and 161.2 inf/s) by 18.2% and 11.1%.
+
+**On trn2, use LNC=1 even though LNC=2 is faster per core.** At LNC=2 a single core is
+2.01x faster (106.55 vs 53.14 qps in BF16), but there are half as many cores, so 8 x LNC=1
+beats 4 x LNC=2 by **1.13x** in deployment. Measure at saturation, not single-core.
+
+With full BF16, trn2 delivers **3.7x the throughput of inf2.8xlarge** (658.0 vs 179.0 inf/s).
+
+The inf2.xlarge numbers below were measured with FP32 + `--auto-cast` and have not been
+re-run in BF16. Because inf2.xlarge and inf2.8xlarge expose the same accelerator, BF16 is
+expected to help there too, but that has not been measured.
 
 On inf2, **throughput peaks at BS=1 with high client concurrency**, so server-side dynamic
 batching does the batching work and clients can stay simple. Note that chasing the peak is
@@ -97,9 +147,11 @@ last **1.3%** of throughput costs **2.6x the latency**. Across runs that tradeof
 2.6x to 3.8x, always for under 2% throughput, so **BS=1 with 8 workers is the recommended
 operating point** -- roughly **$1.38 per million inferences**.
 
-Accuracy on both platforms: cosine 0.999999, Spearman 1.0000 vs CPU FP32, top-3 passages
-exact, padding isolation bit-exact across all batch buckets, and ranking identical across
-buckets.
+Accuracy, FP32 + auto-cast notebooks: cosine 0.999999, Spearman 1.0000 vs CPU FP32. BF16
+notebooks: cosine 0.999980 (trn2 LNC=1, inf2) and 0.999998 (trn2 LNC=2). In every notebook:
+top-3 passages exact, padding isolation bit-exact across all batch buckets, and ranking
+identical across buckets. (Spearman below 1.0 in BF16 comes from two irrelevant passages
+tying at the same BF16 score; the relevant top-3 ordering is unaffected.)
 
 ## Instance sizing: use `inf2.xlarge`
 
@@ -322,7 +374,7 @@ Average DMA transfer is only 2.3–2.6 KB, far below the ~32 KiB size where DMA 
 Per-engine instruction-binary sizes corroborate a scheduling change rather than a math change:
 Tensor **+0.0%**, Activation **+24.3%**, Sync **+89.8%**, Pool **-62.9%**.
 
-#### Cause: the new NIR codegen, but only on large monolithic graphs
+#### Cause: the new NIR codegen, on the FP32 + `--auto-cast` program
 
 SDK 2.31 made a redesigned NIR code-generation backend ("narwhal") the default **on Trn2 and
 Trn3**. The compiler's own debug log confirms it runs on 2.31 and not on 2.30 — with
@@ -339,10 +391,19 @@ narwhal engages there too:
 | `torch_neuronx.trace()` | 1 monolithic graph, ~1.3M instructions | 81.64 qps | 61.06 qps | **-25.2%** |
 | `torch.compile(backend="neuron")` | many small subgraphs | 53.55 qps | 53.17 qps | **-0.7%** |
 
-So the regression is an **interaction between the new codegen and a single large graph**
-(the trace path hands the compiler one ~1.3M-instruction, 33.7 MB HLO), not a general property
-of narwhal. Practical implication: **the severity depends on how your graph is partitioned**,
-so measure your own model rather than assuming either the 25% or the 0.7% figure applies.
+**The deciding variable turned out to be dtype, not graph shape.** On the *same* trace path,
+same monolithic graph, varying only the dtype:
+
+| trace, trn2 LNC=1, BS=16 | cc 2.25 | cc 2.26 | delta |
+|---|---|---|---|
+| FP32 + `--auto-cast matmult` | 81.72 qps | 61.06 qps | **-25.3%** |
+| full BF16 | 79.37 qps | 79.57 qps | **+0.3%** |
+
+Full BF16 hands narwhal essentially the same single block (1,289,217 vs 1,303,465
+instructions; `functions=1`, `blocks=1` either way) and does not regress. So the defect is in
+how the new codegen handles the **FP32 + `--auto-cast matmult` (mixed-precision) program**.
+Note the inversion: on cc 2.25 FP32 + auto-cast is the faster of the two; on cc 2.26 it is the
+slower one. The Native control above was compiled in BF16, which is consistent with this.
 
 We could not test this by toggling the codegen: `--disable-narwhal` exists inside the compiler
 but is **not reachable** from the `neuronx-cc` CLI, from `--tensorizer-options`, or from any
@@ -352,8 +413,10 @@ Caveat on the comparison: the two 2.25 builds differ (2.25.3371 on trace, 2.25.1
 the only 2.25 builds publicly available on each path). Each within-path comparison is
 controlled, but the builds are not identical.
 
-Note also that PyTorch Native is substantially slower than trace in absolute terms on this
-model (53.6 vs 81.6 qps, -34%), so migrating paths is not a workaround for this regression.
+A correction to an earlier version of this README: it said PyTorch Native is 34% slower than
+trace on this model. That compared Native at **LNC=1** only. At **LNC=2**, Native BF16 reaches
+**106.55 qps** single-core (cosine 0.999994, top-3 exact) -- faster than any trace
+configuration measured here. Compare compile paths with an LNC sweep, not at one setting.
 
 #### The penalty scales with batch size
 
@@ -373,11 +436,17 @@ This also reconciles the single-core and server numbers: the Triton deployment p
 **BS=4**, where the penalty is only -11.7%, and multi-instance saturation hides part of even
 that. End-to-end Triton loss was **-7.1%** (556.9 → 517.1 inf/s) on trn2 and **-2.4%** on inf2.
 
-#### Workaround
+#### Workaround: use full BF16
 
-If you run **large batches on trn2**, pin the compiler to SDK 2.30 and leave everything else
-on SDK 2.31. This recovers **+33.7%** at BS=16 with identical accuracy (cosine 0.999996,
-top-3 unchanged):
+Cast the model to BF16 and drop `--auto-cast` (see
+[Recommended compilation](#recommended-compilation-sdk-231)). On trn2 this is **+30.3%**
+single-core on the SDK 2.31 compiler (61.06 -> 79.57 qps), needs **no compiler pin and no SDK
+downgrade**, and at the deployment level gives **658.0 inf/s** -- above the pre-regression
+556.9 inf/s. Accuracy: cosine 0.999966, top-3 correct.
+
+**Fallback, only if you must keep FP32 weights:** pin the compiler to SDK 2.30 and leave
+everything else on SDK 2.31. This recovers **+33.7%** at BS=16 for the FP32 + auto-cast
+program, with identical accuracy (cosine 0.999996, top-3 unchanged):
 
 ```bash
 pip install --index-url https://pip.repos.neuron.amazonaws.com \
@@ -392,7 +461,7 @@ Reproduction scripts and raw profile data are available on request.
 
 ### 2. LNC=1 for throughput, LNC=2 for latency (trn2)
 
-Single core, seq_len=1024, SDK 2.31:
+Single core, seq_len=1024, SDK 2.31, FP32 + `--auto-cast matmult`:
 
 | BS | LNC=1 | LNC=2 | ratio |
 |---|---|---|---|
@@ -408,6 +477,11 @@ But two corrections to the earlier guidance:
 - **At BS=1, LNC=2 is 1.92x faster per core and roughly halves latency (8.01 vs 15.40 ms).**
   If your reranker is latency-bound at low batch rather than throughput-bound, **compile for
   LNC=2**. Cost: ~2x NEFF size (1317 vs 676 MB at BS=1) and a DP=4 ceiling.
+
+In full BF16 the per-core LNC=2 advantage at BS=16 is **2.01x** (106.55 vs 53.14 qps,
+PyTorch Native), yet **LNC=1 still wins in deployment by 1.13x** (658.0 vs 581.6 inf/s under
+Triton) because LNC=2 has half as many cores. A per-core win only pays off if it exceeds
+2.0x by a margin; this one does not.
 
 A model compiled for one LNC mode **cannot load** under the other. Keep the `--lnc` compiler
 flag and the `NEURON_LOGICAL_NC_CONFIG` runtime variable matched, and pass the runtime
