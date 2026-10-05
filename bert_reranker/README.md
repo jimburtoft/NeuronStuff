@@ -13,8 +13,8 @@ extrapolated, or simulated.
 
 | Notebook | Platform | dtype | Peak throughput |
 |---|---|---|---|
-| **`bert_reranker_triton_trn2_bf16_lnc1_sdk231.ipynb`** | **trn2.3xlarge**, Triton, LNC=1, 8 instances | **full BF16** | **658.0 inf/s** |
-| **`bert_reranker_triton_inf2_bf16_sdk231.ipynb`** | **inf2.8xlarge**, Triton, 2 instances | **full BF16** | **179.0 inf/s** |
+| **`bert_reranker_triton_trn2_bf16_lnc1_sdk231.ipynb`** | **trn2.3xlarge**, Triton, LNC=1, 8 instances | **full BF16** | **657.0 inf/s** |
+| **`bert_reranker_triton_inf2_bf16_sdk231.ipynb`** | **inf2.8xlarge**, Triton, 2 instances | **full BF16** | **180.1 inf/s** |
 | `bert_reranker_triton_inf2_xlarge_sdk231.ipynb` | inf2.xlarge, Triton, 2 instances | FP32 + auto-cast | 154.8-156.7 inf/s |
 | `bert_reranker_triton_inf2_sdk231.ipynb` | inf2.8xlarge, Triton, 2 instances | FP32 + auto-cast | 157.4 inf/s |
 | `bert_reranker_triton_trn2_lnc1_sdk231.ipynb` | trn2.3xlarge, Triton, LNC=1, 8 instances | FP32 + auto-cast | 517.1 inf/s |
@@ -24,6 +24,19 @@ with `--auto-cast matmult`) is the single largest lever on SDK 2.31: **+27.2% on
 **+13.7% on inf2** at the deployment level, with accuracy held (cosine >= 0.999974 vs a CPU
 FP32 reference, correct top-3 ranking). The FP32 notebooks are kept for comparison. See
 [Recommended compilation](#recommended-compilation-sdk-231).
+
+All of the above use `torch_neuronx.trace()`, which is **deprecated**: SDK 2.32 ships no
+`torch_neuronx` environment, so these notebooks are tied to SDK 2.31. The supported path,
+**PyTorch Native**, has its own notebooks:
+
+| Notebook | Platform | Peak throughput |
+|---|---|---|
+| `bert_reranker_triton_native_trn2_lnc1_beta4.ipynb` | trn2.3xlarge, LNC=1, 8 instances | 427.8 inf/s |
+| `bert_reranker_triton_native_trn2_lnc2_beta4.ipynb` | trn2.3xlarge, LNC=2, 4 instances | 425.8 inf/s |
+| `bert_reranker_triton_native_inf2_beta4.ipynb` | inf2.8xlarge, 2 instances | 126.3 inf/s |
+
+**On this model PyTorch Native is currently 35% slower than trace on trn2 and 30% slower on
+inf2.** See [Trace vs PyTorch Native](#trace-vs-pytorch-native).
 
 `*_executed.ipynb` are the same notebooks with real output from a full
 `jupyter nbconvert --execute` run (0 errors in every cell on every platform).
@@ -119,22 +132,23 @@ Benchmark methodology on both platforms: threaded workers, 10 s per configuratio
 
 | Platform | dtype | Instances | Peak | Best under 100 ms P50 |
 |---|---|---|---|---|
-| **trn2.3xlarge LNC=1** | **full BF16** | 8 | **658.0 inf/s** (BS=2, 64 workers) | **656.9 inf/s @ 49.38 ms** |
+| **trn2.3xlarge LNC=1** | **full BF16** | 8 | **657.0 inf/s** (BS=2, 64 workers) | **656.5 inf/s @ 50.49 ms** |
 | trn2.3xlarge LNC=2 | full BF16 | 4 | 581.6 inf/s (BS=1, 64 workers) | 580.5 inf/s @ 59.14 ms |
 | trn2.3xlarge LNC=1 | FP32 + auto-cast | 8 | 517.1 inf/s (BS=4, 64 workers) | 511.1 inf/s @ 63.76 ms |
-| **inf2.8xlarge** | **full BF16** | 2 | **179.0 inf/s** (BS=1, 16 workers) | **179.0 inf/s @ 87.89 ms** |
+| **inf2.8xlarge** | **full BF16** | 2 | **180.1 inf/s** (BS=2, 32 workers) | **178.7 inf/s @ 89.46 ms** |
 | inf2.8xlarge | FP32 + auto-cast | 2 | 157.4 inf/s (BS=1, 32 workers) | 155.1 inf/s @ 50.91 ms |
 | inf2.xlarge | FP32 + auto-cast | 2 | 156.1 inf/s (BS=1, 32 workers) | 152.8 inf/s @ 39.76 ms |
 
-**Full BF16 is the best configuration on both platforms**: **+27.2%** on trn2 (517.1 -> 658.0)
-and **+13.7%** on inf2.8xlarge (157.4 -> 179.0) at the deployment level. Both also **beat the
-pre-regression SDK 2.27/2.28 numbers** (556.9 and 161.2 inf/s) by 18.2% and 11.1%.
+**Full BF16 is the best configuration on both platforms**: **+27.1%** on trn2 (517.1 -> 657.0)
+and **+14.4%** on inf2.8xlarge (157.4 -> 180.1) at the deployment level. Both also **beat the
+pre-regression SDK 2.27/2.28 numbers** (556.9 and 161.2 inf/s) by 18.0% and 11.7%.
 
 **On trn2, use LNC=1 even though LNC=2 is faster per core.** At LNC=2 a single core is
 2.01x faster (106.55 vs 53.14 qps in BF16), but there are half as many cores, so 8 x LNC=1
-beats 4 x LNC=2 by **1.13x** in deployment. Measure at saturation, not single-core.
+beats 4 x LNC=2 by **1.13x** in deployment (658.0 vs 581.6 inf/s, measured with the earlier
+benchmark script -- see the note below). Measure at saturation, not single-core.
 
-With full BF16, trn2 delivers **3.7x the throughput of inf2.8xlarge** (658.0 vs 179.0 inf/s).
+With full BF16, trn2 delivers **3.6x the throughput of inf2.8xlarge** (657.0 vs 180.1 inf/s).
 
 The inf2.xlarge numbers below were measured with FP32 + `--auto-cast` and have not been
 re-run in BF16. Because inf2.xlarge and inf2.8xlarge expose the same accelerator, BF16 is
@@ -152,6 +166,62 @@ notebooks: cosine 0.999980 (trn2 LNC=1, inf2) and 0.999998 (trn2 LNC=2). In ever
 top-3 passages exact, padding isolation bit-exact across all batch buckets, and ranking
 identical across buckets. (Spearman below 1.0 in BF16 comes from two irrelevant passages
 tying at the same BF16 score; the relevant top-3 ordering is unaffected.)
+
+### Benchmark-script correction
+
+The load-test code in the earlier notebooks had a defect. It created every Triton HTTP client
+in the main thread and handed them to worker threads; `tritonclient.http` binds a client to the
+first thread that uses it, so **worker 0 failed on its first request and the error was
+swallowed**. Every row ran one worker short, and every 1-worker row produced no data and was
+left out of the table.
+
+The BF16 and PyTorch Native notebooks now use a fixed script (each worker creates its own
+client, and any idle worker aborts the run), and the BF16 numbers above come from re-running
+them with it. The change is small once the server is saturated:
+
+| | earlier script | fixed script |
+|---|---|---|
+| trn2 BF16 peak | 658.0 inf/s | 657.0 inf/s |
+| trn2 BF16 best under 100 ms | 656.9 @ 49.38 ms | 656.5 @ 50.49 ms |
+| inf2 BF16 peak | 179.0 inf/s | 180.1 inf/s |
+| inf2 BF16 best under 100 ms | 179.0 @ 87.89 ms | 178.7 @ 89.46 ms |
+
+The FP32 + auto-cast notebooks, the inf2.xlarge notebook and the trn2 LNC=2 trace figure
+(581.6 inf/s) were measured with the earlier script and have not been re-run. Their peaks should
+be similarly close, but their low-concurrency rows understate throughput by up to one worker in
+W, and they have no W=1 rows.
+
+## Trace vs PyTorch Native
+
+Same model, full BF16, Triton, same (fixed) benchmark script, every core loaded:
+
+| Platform | Path | Instances | One request in flight (BS=16) | Peak | Best under 100 ms P50 |
+|---|---|---|---|---|---|
+| trn2.3xlarge | **trace**, LNC=1 | 8 | 73.8 inf/s | **657.0** | **656.5 @ 50.5 ms** |
+| trn2.3xlarge | Native, LNC=1 | 8 | 52.6 inf/s | 427.8 | 407.6 @ 79.1 ms |
+| trn2.3xlarge | Native, LNC=2 | 4 | **105.1 inf/s** | 425.8 | 389.7 @ 85.3 ms |
+| inf2.8xlarge | **trace** | 2 | 72.3 inf/s | **180.1** | **178.7 @ 89.5 ms** |
+| inf2.8xlarge | Native | 2 | 63.3 inf/s | 126.3 | 103.8 @ 76.8 ms |
+
+- **Trace is faster at the device level: +54% on trn2 and +43% on inf2.**
+- PyTorch Native at **LNC=2 is the fastest per core** (105.1 inf/s with one BS=16 request in
+  flight) and has the lowest single-request latency at large batch (152 ms vs 217 ms for trace).
+  But with half as many cores it saturates at the same ~426 inf/s as Native at LNC=1.
+- Accuracy is the same on both paths: cosine 0.999982 (Native) vs CPU FP32, correct top-3,
+  padding isolation bit-exact, ranking stable across buckets.
+- **Native cold start is good**: each batch size compiles once (1.1 min at LNC=1, 4.4 min at
+  LNC=2 on trn2; 5.5 min on inf2) into a NEFF cache that is mounted into Triton via
+  `TORCH_NEURONX_NEFF_CACHE_DIR`, so every model instance starts in under a minute.
+
+**Recommendation.** For the best throughput today, use trace on SDK 2.31. Trace is deprecated,
+though, and has no environment in SDK 2.32, so plan the move to Native and re-measure it as new
+Native releases land. These numbers come from the PyTorch Native Beta 4 container (torch 2.11.0,
+torch-neuronx 2.11.3, neuronx-cc 2.26).
+
+The Native notebooks build Triton r26.01 (python backend) from source on top of the Beta 4
+container. Two things the build needs that the container lacks: the `distro`, `build` and
+`virtualenv` Python packages, and removal of an internal apt source in the image that returns
+401 and makes every `apt-get update` fail. Both are handled in the generated Dockerfile.
 
 ## Instance sizing: use `inf2.xlarge`
 
@@ -441,7 +511,7 @@ that. End-to-end Triton loss was **-7.1%** (556.9 → 517.1 inf/s) on trn2 and *
 Cast the model to BF16 and drop `--auto-cast` (see
 [Recommended compilation](#recommended-compilation-sdk-231)). On trn2 this is **+30.3%**
 single-core on the SDK 2.31 compiler (61.06 -> 79.57 qps), needs **no compiler pin and no SDK
-downgrade**, and at the deployment level gives **658.0 inf/s** -- above the pre-regression
+downgrade**, and at the deployment level gives **657.0 inf/s** -- above the pre-regression
 556.9 inf/s. Accuracy: cosine 0.999966, top-3 correct.
 
 **Fallback, only if you must keep FP32 weights:** pin the compiler to SDK 2.30 and leave
@@ -479,8 +549,8 @@ But two corrections to the earlier guidance:
   LNC=2**. Cost: ~2x NEFF size (1317 vs 676 MB at BS=1) and a DP=4 ceiling.
 
 In full BF16 the per-core LNC=2 advantage at BS=16 is **2.01x** (106.55 vs 53.14 qps,
-PyTorch Native), yet **LNC=1 still wins in deployment by 1.13x** (658.0 vs 581.6 inf/s under
-Triton) because LNC=2 has half as many cores. A per-core win only pays off if it exceeds
+PyTorch Native), yet **LNC=1 still wins in deployment by 1.13x** (658.0 vs 581.6 inf/s for
+trace under Triton, earlier benchmark script) because LNC=2 has half as many cores. A per-core win only pays off if it exceeds
 2.0x by a margin; this one does not.
 
 A model compiled for one LNC mode **cannot load** under the other. Keep the `--lnc` compiler
