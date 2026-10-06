@@ -7,6 +7,125 @@ Deployment and benchmarking of
 Every number in this directory is a **hardware measurement**. Nothing is estimated,
 extrapolated, or simulated.
 
+## Example mixed-length workload (start here)
+
+The other benchmarks in this directory pad every request to 1024 tokens. A reranker in a search
+pipeline usually sees something quite different: mostly short query+passage pairs, sent in large
+batches. These notebooks benchmark an **example workload** of that shape. Its numbers are
+illustrative round figures, not taken from any particular deployment. Edit `EXAMPLE_MIX` in the
+notebooks to model your own traffic.
+
+**The example.** Five length buckets. The client groups each request's sequences by length and
+sends one Triton call per bucket, up to 32 sequences per call:
+
+| bucket (tokens) | % of Triton calls | mean sequences per call | % of sequences | % of compute |
+|---:|---:|---:|---:|---:|
+| 128 | 30 | 6 | 10.9 | 5.5 |
+| 256 | 50 | 28 | 84.8 | 85.2 |
+| 512 | 15 | 4 | 3.6 | 7.3 |
+| 768 | 3 | 2 | 0.4 | 1.1 |
+| 1024 | 2 | 2 | 0.2 | 1.0 |
+
+The last two columns follow from the first two. Call sizes are drawn per bucket from a
+distribution with the stated mean. The measured sequence mix stayed within 1.5 points of the
+target at every measurement point.
+
+Load is a closed-loop gRPC concurrency sweep, 20 s per point after warmup. Everything runs in
+full BF16. Every configuration passed the same accuracy checks:
+- cosine >= 0.99998 against a CPU FP32 reference at every length
+- correct top-3 ranking
+- padding isolation bit-exact
+
+### Results
+
+![all configurations](images/example_workload_all.png)
+
+| configuration | peak sequences/s | p50 / p99 at peak (ms) | best sequences/s with p99 <= 100 ms | at concurrency (p50 / p99 ms) |
+|---|---:|---:|---:|---|
+| **trn2.3xlarge, trace, LNC=1, 8 instances** | **3,662** | 145 / 197 | **3,405** | 8 (45 / 63) |
+| trn2.3xlarge, Native, LNC=1, 8 instances | 1,999 | 786 / 958 | — | p99 never below 100 ms (best 111 ms) |
+| trn2.3xlarge, Native, LNC=2, 4 instances | 1,899 | 540 / 680 | 1,749 | 4 (36 / 61) |
+| inf2.xlarge, trace, 2 instances | 792 | 66 / 126 | 771 | 2 (51 / 72) |
+| **inf2.8xlarge, trace, 2 instances** | 761 | 51 / 73 | **761** | 2 (51 / 73) |
+| inf2.8xlarge, Native, 2 instances | 486 | 410 / 617 | — | p99 never below 100 ms (best 119 ms) |
+| inf2.xlarge, Native, 2 instances | 485 | 414 / 597 | — | p99 never below 100 ms (best 119 ms) |
+
+Per-platform p50 and p99 curves:
+- [trn2](images/example_workload_curves_trn2.png)
+- [inf2.8xlarge](images/example_workload_curves_inf2.png)
+- [inf2.xlarge](images/example_workload_curves_inf2x.png)
+
+Raw curves are in `results/example_workload/*.json`, and `plot_example_workload.py` regenerates
+the plots.
+
+### What this shows
+
+- **Short sequences are much cheaper than the seq=1024 benchmark suggests.** For this example,
+  trn2 with trace serves **3,405 sequences/s at a 63 ms p99**, and inf2 serves **761 sequences/s
+  at 73 ms**.
+- **Each device saturates at low concurrency.** trn2 trace saturates at about 8 concurrent calls,
+  inf2 at 2-3. Beyond that, more concurrency only adds queueing latency. Pick the concurrency
+  from the curve for your latency target.
+- **Trace is faster than PyTorch Native on this workload too**: 1.83x on trn2 and 1.56x on inf2
+  at peak. Native at LNC=2 on trn2 is the only Native configuration that meets a 100 ms p99.
+- **inf2.xlarge matches inf2.8xlarge** (same accelerator) at about 40% of the price.
+- **Batching pays off far more at 256 tokens than at 1024.** With one call in flight at seq=256,
+  trace takes about the same time for 1 to 24 sequences:
+
+  | batch size, seq=256, one call in flight | 1 | 8 | 16 | 24 | 32 |
+  |---|---:|---:|---:|---:|---:|
+  | trn2 trace, sequences/s | 21 | 176 | 338 | 530 | 535 |
+  | trn2 Native LNC=2, sequences/s | 56 | 440 | 499 | 522 | 530 |
+  | inf2 trace, sequences/s | 18 | 164 | 314 | 493 | 490 |
+
+  Native is about 2.5x faster than trace for small calls. Trace catches up from batch 24.
+
+### Two deployment constraints the notebooks work around
+
+1. **Use one model per NeuronCore that holds every length.** A NeuronCore can be opened by only
+   one process, and Triton runs each model instance as its own process. So one model per length
+   (five models, each with an instance on every core) cannot start. The notebooks instead deploy
+   a single model with a variable input length. Each instance holds every (length, batch) graph
+   and routes by the call's length. Triton's dynamic batcher only merges calls of the same shape,
+   so batching still happens per length.
+2. **Device memory limits how many graphs trace can load.** `torch_neuronx.trace` embeds the
+   weights in every compiled graph (~0.75 GB each), and on inf2 loading failed at about 18 graphs
+   per core. Native shares one copy of the weights, so it uses 24 graphs. The trace notebooks use
+   12, chosen to minimise padded compute for this example:
+
+   | length | trace graphs (12) | Native graphs (24) |
+   |---:|---|---|
+   | 128 | 8, 32 | 1, 4, 8, 16, 32 |
+   | 256 | 24, 28, 32 | 8, 16, 24, 32 |
+   | 512 | 4, 8, 32 | 2, 4, 8, 16, 32 |
+   | 768 | 4, 32 | 1, 2, 4, 8, 32 |
+   | 1024 | 4, 32 | 1, 2, 4, 8, 32 |
+
+### Notebooks
+
+`bert_reranker_triton_example_workload_<platform>_<path>[_lnc<N>].ipynb`, one per configuration,
+with `_executed` copies holding the real output. They are generated by
+`make_triton_example_workload.py <trn2|inf2|inf2x> <trace|native> [lnc]`. Each notebook is
+self-contained and runs, in order:
+1. compile
+2. accuracy gate
+3. Triton build
+4. server start
+5. accuracy check through the server
+6. warmup
+7. concurrency sweep
+8. batch sweep
+9. plots
+
+Two things learned while building them, both handled in the notebooks:
+
+- **PyTorch Native silently falls back to eager after 8 compiled shapes.** `torch._dynamo`'s
+  `cache_size_limit` defaults to 8, and past it the model runs uncompiled. With this model on
+  Beta 4, the eager path also returned **wrong scores at seq=768, batch 32** (cosine 0.9555). The
+  notebooks raise the limit and check that every graph compiled.
+- **Warm every path before timing.** Without a full-workload warmup, the first measurement point
+  paid first-call costs of over a second per call.
+
 ## Notebooks
 
 ### Current — Neuron SDK 2.31
