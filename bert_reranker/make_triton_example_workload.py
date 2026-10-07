@@ -22,7 +22,7 @@ at 32, with lambda fitted per bucket so the mean matches. Edit EXAMPLE_MIX to mo
 
 Two paths, selected by argv:
   trace  : torch_neuronx.trace (deprecated; SDK 2.31 only). One traced .pt per (length, batch).
-  native : torch.compile(backend="neuron") on the PyTorch Native Beta 4 container, persisted
+  native : torch.compile(backend="neuron") on the PyTorch Native Beta 6 container, persisted
            through TORCH_NEURONX_NEFF_CACHE_DIR.
 
 Both use full BF16 (the fastest configuration on SDK 2.31 for this model).
@@ -56,13 +56,24 @@ PATH = sys.argv[2]
 LNC = sys.argv[3] if len(sys.argv) > 3 else "1"
 NINST = {"trn2": {"1": 8, "2": 4}, "inf2": {"1": 2}, "inf2x": {"1": 2}}[PLATFORM][LNC]
 DEV = "trn2" if PLATFORM == "trn2" else "inf2"
+# PyTorch Native Beta 6 (torch 2.13, torch-neuronx 2.13.3, NKI 0.7.0b1). Measured the same speed
+# as Beta 4/5 and the Sep 2026 nightly on this model; it is the newest numbered Beta.
 BETA4 = ("421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:"
-         "2.11.0-neuronx-py312-sdk2.31.0-ubuntu24.04-neurondlcbuilder-development-6488856940-0")
+         "2.13.0-neuronx-py312-sdk2.32.0-ubuntu24.04-neurondlcbuilder-development-6516808413-0")
 TRACE_BASE = "public.ecr.aws/neuron/pytorch-inference-neuronx:2.9.0-neuronx-py312-sdk2.31.0-ubuntu24.04"
 TAG = f"{PLATFORM}_{PATH}" + (f"_lnc{LNC}" if PLATFORM == "trn2" else "")
 CONC = {"trn2": [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128],
         "inf2": [1, 2, 3, 4, 6, 8, 12, 16, 24, 32],
         "inf2x": [1, 2, 3, 4, 6, 8, 12, 16, 24, 32]}[PLATFORM]
+
+GELU_NOTE = ("" if PATH == "trace" else """
+
+**GELU**: this notebook swaps the model's exact (erf) GELU for `nn.GELU(approximate="tanh")`.
+On the PyTorch Native path exact GELU is lowered through FP32 and, on trn2 at seq=256 x 32, costs
+about 36 ms of a 99 ms call; tanh GELU stays in BF16 and the call drops to 63 ms (+57%). On CPU in
+FP32 the two GELUs give cosine 0.999995-0.999997 over 64 query/passage pairs at lengths 128-512, the
+same top-1 for every query, and Spearman >= 0.997. The trace path is the same speed with either
+GELU, so the trace notebooks keep the exact GELU.""")
 
 cells = []
 
@@ -86,7 +97,7 @@ md(f"""# BERT Reranker, example mixed-length workload: {inst_name}, {PATH}{', LN
 behind NVIDIA Triton Inference Server, benchmarked with an **example mixed-length workload**
 rather than a fixed sequence length.
 
-**Path**: {pathname} | **dtype**: full BF16 | **Triton model instances**: {NINST} (one per NeuronCore, each holding every length)
+**Path**: {pathname} | **dtype**: full BF16 | **Triton model instances**: {NINST} (one per NeuronCore, each holding every length){GELU_NOTE}
 
 ## The example workload
 
@@ -265,7 +276,7 @@ else:
     md("""---
 ## Step 1: Populate the NEFF cache for every (length, batch) graph
 
-Runs inside the PyTorch Native Beta 4 container on one core. Each graph is compiled with
+Runs inside the PyTorch Native Beta 6 container on one core. Each graph is compiled with
 `torch.compile(..., backend="neuron", dynamic=False)` into `TORCH_NEURONX_NEFF_CACHE_DIR`, which
 every Triton instance mounts later. Accuracy is checked at every length on the largest batch.
 """)
@@ -286,7 +297,14 @@ dyn.config.accumulated_cache_size_limit = 512
 dev = torch.device("neuron")
 tok = AutoTokenizer.from_pretrained(M, trust_remote_code=True)
 model = AutoModelForSequenceClassification.from_pretrained(
-    M, trust_remote_code=True, attn_implementation="eager").eval().to(torch.bfloat16).to(dev)
+    M, trust_remote_code=True, attn_implementation="eager").eval()
+# Exact (erf) GELU is lowered through FP32 on the PyTorch Native path and costs ~36 ms per
+# seq=256 x 32 call on trn2; the tanh approximation stays in BF16 (see the notebook text).
+for _mod in model.modules():
+    for _cn, _c in _mod.named_children():
+        if "GELU" in type(_c).__name__:
+            setattr(_mod, _cn, torch.nn.GELU(approximate="tanh"))
+model = model.to(torch.bfloat16).to(dev)
 Q = "What are the benefits of renewable energy?"
 P = ["Renewable energy sources like solar and wind power produce electricity without "
      "greenhouse gas emissions, reducing climate change impacts.",
@@ -470,6 +488,11 @@ class TritonPythonModel:
         self.dev = torch.device("neuron")
         m = AutoModelForSequenceClassification.from_pretrained(
             MODEL_ID, trust_remote_code=True, attn_implementation="eager").eval()
+        # tanh-approximate GELU: exact GELU goes through FP32 on the Native path (see notebook)
+        for _mod in m.modules():
+            for _cn, _c in _mod.named_children():
+                if "GELU" in type(_c).__name__:
+                    setattr(_mod, _cn, torch.nn.GELU(approximate="tanh"))
         m = m.to(torch.bfloat16).to(self.dev)
         self.models = {}
         t0 = time.time()
@@ -888,6 +911,7 @@ nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "l
                                                     "name": "python3"},
                                      "language_info": {"name": "python", "version": "3.12"}},
       "nbformat": 4, "nbformat_minor": 5}
-out = f"bert_reranker_triton_example_workload_{TAG}.ipynb"
+out = (""
+       f"bert_reranker_triton_example_workload_{TAG}.ipynb")
 json.dump(nb, open(out, "w"), indent=1)
 print(f"wrote {out} ({len(cells)} cells)")

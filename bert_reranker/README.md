@@ -32,7 +32,7 @@ target at every measurement point.
 
 Load is a closed-loop gRPC concurrency sweep, 20 s per point after warmup. Everything runs in
 full BF16. Every configuration passed the same accuracy checks:
-- cosine >= 0.99998 against a CPU FP32 reference at every length
+- cosine >= 0.99997 against a CPU FP32 reference at every length
 - correct top-3 ranking
 - padding isolation bit-exact
 
@@ -43,12 +43,15 @@ full BF16. Every configuration passed the same accuracy checks:
 | configuration | peak sequences/s | p50 / p99 at peak (ms) | best sequences/s with p99 <= 100 ms | at concurrency (p50 / p99 ms) |
 |---|---:|---:|---:|---|
 | **trn2.3xlarge, trace, LNC=1, 8 instances** | **3,662** | 145 / 197 | **3,405** | 8 (45 / 63) |
-| trn2.3xlarge, Native, LNC=1, 8 instances | 1,999 | 786 / 958 | — | p99 never below 100 ms (best 111 ms) |
-| trn2.3xlarge, Native, LNC=2, 4 instances | 1,899 | 540 / 680 | 1,749 | 4 (36 / 61) |
+| trn2.3xlarge, Native, LNC=1, 8 instances | 3,293 | 163 / 220 | 3,101 | 8 (45 / 69) |
+| trn2.3xlarge, Native, LNC=2, 4 instances | 2,910 | 45 / 74 | 2,910 | 8 (45 / 74) |
 | inf2.xlarge, trace, 2 instances | 792 | 66 / 126 | 771 | 2 (51 / 72) |
+| inf2.xlarge, Native, 2 instances | 762 | 68 / 130 | 732 | 2 (52 / 72) |
 | **inf2.8xlarge, trace, 2 instances** | 761 | 51 / 73 | **761** | 2 (51 / 73) |
-| inf2.8xlarge, Native, 2 instances | 486 | 410 / 617 | — | p99 never below 100 ms (best 119 ms) |
-| inf2.xlarge, Native, 2 instances | 485 | 414 / 597 | — | p99 never below 100 ms (best 119 ms) |
+| inf2.8xlarge, Native, 2 instances | 727 | 52 / 73 | 727 | 2 (52 / 73) |
+
+Native rows use PyTorch Native Beta 6 with tanh-approximate GELU; see
+[Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu).
 
 Per-platform p50 and p99 curves:
 - [trn2](images/example_workload_curves_trn2.png)
@@ -66,8 +69,9 @@ the plots.
 - **Each device saturates at low concurrency.** trn2 trace saturates at about 8 concurrent calls,
   inf2 at 2-3. Beyond that, more concurrency only adds queueing latency. Pick the concurrency
   from the curve for your latency target.
-- **Trace is faster than PyTorch Native on this workload too**: 1.83x on trn2 and 1.56x on inf2
-  at peak. Native at LNC=2 on trn2 is the only Native configuration that meets a 100 ms p99.
+- **PyTorch Native is now close to trace.** With tanh GELU (below), trace leads by 11% on trn2
+  and 4-5% on inf2 at peak, and every Native configuration meets a 100 ms p99. Before the GELU
+  change trace led by 1.83x and 1.56x.
 - **inf2.xlarge matches inf2.8xlarge** (same accelerator) at about 40% of the price.
 - **Batching pays off far more at 256 tokens than at 1024.** With one call in flight at seq=256,
   trace takes about the same time for 1 to 24 sequences:
@@ -75,10 +79,48 @@ the plots.
   | batch size, seq=256, one call in flight | 1 | 8 | 16 | 24 | 32 |
   |---|---:|---:|---:|---:|---:|
   | trn2 trace, sequences/s | 21 | 176 | 338 | 530 | 535 |
-  | trn2 Native LNC=2, sequences/s | 56 | 440 | 499 | 522 | 530 |
+  | trn2 Native LNC=2, sequences/s | 75 | 621 | 706 | 785 | 806 |
   | inf2 trace, sequences/s | 18 | 164 | 314 | 493 | 490 |
 
-  Native is about 2.5x faster than trace for small calls. Trace catches up from batch 24.
+  Native at LNC=2 is about 3.5x faster per core than trace for small calls and still 1.5x faster at
+  batch 32, but it has half as many cores, so at the device level trace stays ahead.
+
+### Why the Native rows use tanh GELU
+
+This model uses exact (erf) GELU. A device profile of PyTorch Native at seq=256, batch 32, LNC=1
+on trn2 showed it spending 2.5x trace's Vector and Scalar engine time, almost all of it in FP32
+although the model runs in BF16. Tensor engine time was nearly the same on both paths:
+
+| per call, seq=256 x 32, trn2 LNC=1 | trace | Native, exact GELU | Native, tanh GELU |
+|---|---:|---:|---:|
+| wall time | 57 ms | 98 ms | 61 ms |
+| tensor engine active | 37 ms | 42 ms | 40 ms |
+| vector + scalar engine time | 63 ms | 157 ms | 80 ms |
+| of which on FP32 data | 26 ms | 114 ms | 26 ms |
+
+Swapping in `nn.GELU(approximate="tanh")` removes the FP32 detour: **+57% single-core**
+(322 -> 505 sequences/s) and +49-65% end to end in the table above.
+- **Accuracy holds.** In FP32 on CPU, over 64 query/passage pairs at lengths 128, 256 and 512, the
+  two GELUs give cosine 0.999995-0.999997, Spearman >= 0.997 per query, and the same top-1 for
+  every query. On device the end-to-end check stays at cosine >= 0.99997 with the correct top-3.
+- **Trace is unaffected.** It runs the same speed with either GELU (555 sequences/s), so the trace
+  rows keep the exact GELU.
+
+### Native across releases
+
+Single core, BF16, exact GELU, sequences/s with one call in flight:
+
+| container | neuronx-cc | 256 x 8 | 256 x 32 | 1024 x 16 | LNC |
+|---|---|---:|---:|---:|---:|
+| Beta 4 | 2.26.6360 | 291 / 519 | 298 / 560 | 53 / 107 | 1 / 2 |
+| Beta 5 | 2.27.2878 | 290 / 533 | 298 / 569 | 53 / 106 | 1 / 2 |
+| Beta 6 | 2.0.404056 (dev) | 307 / 545 | 321 / 593 | 53 / 105 | 1 / 2 |
+| nightly, 2026-09-25 | 2.0.407645 (dev) | 304 / 536 | 322 / 595 | 53 / 106 | 1 / 2 |
+| trace, SDK 2.31 | 2.26.6360 | 592 / 550 | 557 / 479 | 75 / 59 | 1 / 2 |
+
+Each cell is LNC=1 / LNC=2. Newer Native releases change throughput by at most 8%, so the gap to
+trace is not closing on its own; the GELU change above is what closes it. The nightly build
+needs the `-py314` image variant; the default tag fails to import `torch_neuronx`.
 
 ### Two deployment constraints the notebooks work around
 
@@ -122,7 +164,8 @@ Two things learned while building them, both handled in the notebooks:
 - **PyTorch Native silently falls back to eager after 8 compiled shapes.** `torch._dynamo`'s
   `cache_size_limit` defaults to 8, and past it the model runs uncompiled. With this model on
   Beta 4, the eager path also returned **wrong scores at seq=768, batch 32** (cosine 0.9555). The
-  notebooks raise the limit and check that every graph compiled.
+  notebooks raise the limit and check that every graph compiled. The Native notebooks now use
+  Beta 6.
 - **Warm every path before timing.** Without a full-workload warmup, the first measurement point
   paid first-call costs of over a second per call.
 
@@ -154,8 +197,9 @@ All of the above use `torch_neuronx.trace()`, which is **deprecated**: SDK 2.32 
 | `bert_reranker_triton_native_trn2_lnc2_beta4.ipynb` | trn2.3xlarge, LNC=2, 4 instances | 425.8 inf/s |
 | `bert_reranker_triton_native_inf2_beta4.ipynb` | inf2.8xlarge, 2 instances | 126.3 inf/s |
 
-**On this model PyTorch Native is currently 35% slower than trace on trn2 and 30% slower on
-inf2.** See [Trace vs PyTorch Native](#trace-vs-pytorch-native).
+With the model's exact GELU these Native notebooks are 35% slower than trace on trn2 and 30% slower
+on inf2. With tanh GELU the gap shrinks to 4-11%; see
+[Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu).
 
 `*_executed.ipynb` are the same notebooks with real output from a full
 `jupyter nbconvert --execute` run (0 errors in every cell on every platform).
@@ -311,6 +355,10 @@ be similarly close, but their low-concurrency rows understate throughput by up t
 W, and they have no W=1 rows.
 
 ## Trace vs PyTorch Native
+
+> **Update:** these measurements use PyTorch Native Beta 4 with the model's exact GELU. Exact GELU
+> is the main cause of the gap: switching to tanh GELU makes Native 49-65% faster and within 4-11%
+> of trace. See [Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu).
 
 Same model, full BF16, Triton, same (fixed) benchmark script, every core loaded:
 
