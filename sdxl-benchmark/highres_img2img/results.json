@@ -40,10 +40,5 @@
         "vae_decode_s": 10.0
       }
     }
-  },
-  "cost_per_hour_usd": 2.235,
-  "cost_per_image": {
-    "2048": 0.03597,
-    "4096": 0.08853
   }
 }

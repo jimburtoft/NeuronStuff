@@ -13,12 +13,12 @@ Generates coherent 2048x2048 and 4096x4096 SDXL images on Neuron using only 1024
 
 ## Results
 
-| Resolution | Mean (s) | Std (s) | Seeds | Pass | $/image |
-|-----------|----------|---------|-------|------|---------|
-| 2048x2048 | **57.94** | ±0.02 | 10 | 10/10 | $0.0360 |
-| 4096x4096 | **142.62** | ±0.01 | 3 | 3/3 | $0.0885 |
+| Resolution | Mean (s) | Std (s) | Seeds | Pass |
+|-----------|----------|---------|-------|------|
+| 2048x2048 | **57.94** | ±0.02 | 10 | 10/10 |
+| 4096x4096 | **142.62** | ±0.01 | 3 | 3/3 |
 
-**Instance**: trn2.3xlarge (LNC=2, 4 logical cores), SDK 2.29, $2.235/hr.
+**Instance**: trn2.3xlarge (LNC=2, 4 logical cores), SDK 2.29.
 
 ### Latency Breakdown (2048x2048)
 
@@ -29,15 +29,6 @@ Generates coherent 2048x2048 and 4096x4096 SDXL images on Neuron using only 1024
 | Tiled denoise | ~40.5 | 18 steps × 4 tiles |
 | Tiled VAE decode | ~2.7 | 4 tiles |
 | **Total** | **~57.9** | |
-
-### Comparison with GPU
-
-| Resolution | Neuron (img2img) | H100 BF16 | H100 FP8+compile | L4 FP8+compile |
-|-----------|-----------------|-----------|-------------------|----------------|
-| 2048x2048 | 57.94s | 12.14s | 8.37s | 74.85s |
-| 4096x4096 | 142.62s | 94.37s | 63.86s | 550.21s |
-
-**Note**: GPU runs the UNet monolithically at the target resolution (direct generation). The Neuron approach uses img2img upscaling because monolithic compilation at 2K+ is blocked by instruction count / host RAM limits. Both produce equivalent-quality images. Neuron is 1.3x faster than L4 FP8+compile at 2K, and 3.9x faster at 4K.
 
 ## Failed Approaches (for reference)
 

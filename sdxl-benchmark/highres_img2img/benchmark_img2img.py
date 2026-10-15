@@ -797,14 +797,12 @@ def main():
     print("FINAL RESULTS")
     print("=" * 60)
     print(
-        f"{'Resolution':<12} {'Mean (s)':<12} {'Std (s)':<10} {'Pass':<8} {'$/image':<10}"
+        f"{'Resolution':<12} {'Mean (s)':<12} {'Std (s)':<10} {'Pass':<8}"
     )
     print("-" * 52)
-    cost_per_hour = 2.235  # trn2.3xlarge full chip
     for res, data in all_results.items():
-        cost = (data["mean_s"] / 3600) * cost_per_hour
         print(
-            f"{res}x{res:<7} {data['mean_s']:<12.2f} {data['std_s']:<10.2f} {data['pass']:<8} ${cost:.4f}"
+            f"{res}x{res:<7} {data['mean_s']:<12.2f} {data['std_s']:<10.2f} {data['pass']:<8}"
         )
 
 

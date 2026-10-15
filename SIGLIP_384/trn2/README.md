@@ -297,8 +297,6 @@ source /opt/aws_neuronx_venv_pytorch_2_9_nxd_inference/bin/activate
 
 ## Instance Details (Tested)
 
-- **Instance ID:** i-0de2e6a602539fe0e
-- **Public IP:** 18.231.130.69
 - **Type:** trn2.3xlarge
 - **Region:** sa-east-1
 - **AMI:** Deep Learning AMI Neuron (Ubuntu 24.04) 20260126
