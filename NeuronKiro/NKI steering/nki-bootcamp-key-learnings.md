@@ -195,7 +195,7 @@ This document captures the most important lessons and insights from the 8-sessio
 2. Establish baseline (step 7)
 3. Then optimize (steps 8-9)
 
-## Real-World Case Study: Autodesk Trilinear Interpolation
+## Case study: trilinear interpolation
 
 ### The Problem
 - Model used trilinear interpolation operator
@@ -218,9 +218,7 @@ This document captures the most important lessons and insights from the 8-sessio
 - **6 weeks is realistic:** For complex kernels with learning curve
 
 ### Performance Result
-- 200-300x slower than CUDA kernel
-- But: Unlocked the model on Neuron
-- Customer could proceed with migration
+- Unlocked the model on Neuron
 
 **Lesson:** Sometimes "working" is more important than "optimal."
 

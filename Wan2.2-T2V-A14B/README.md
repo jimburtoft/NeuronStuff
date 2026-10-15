@@ -30,19 +30,6 @@ Measured on trn2.48xlarge (16 NeuronDevices, 64 NeuronCores with LNC=2) with Neu
 - **Parallelism:** TP=4, CP=4 (world_size=16) per expert — 16 of 64 NeuronCores
 - **Compiler flags:** `-O1 --auto-cast=none --enable-native-kernel=1 --remat`
 
-### GPU Comparison
-
-| Config | Time (s) | Notes |
-|--------|----------|-------|
-| **trn2.48xlarge (ours)** | **~1224** | TP=4, CP=4, batch=1, 16 cores only |
-| 1x H100 | 1042 | Warm start, 720P |
-| 4x H100 | 289 | Warm start, 720P |
-| 1x A100 | 2736 | Warm start, 720P |
-| 4x A100 | 725 | Warm start, 720P |
-
-
-GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
-
 ### Optimization Opportunities
 
 The current result (20.4 min) is a baseline. Key optimization paths:
