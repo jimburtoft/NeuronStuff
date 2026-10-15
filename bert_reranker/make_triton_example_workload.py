@@ -58,8 +58,7 @@ NINST = {"trn2": {"1": 8, "2": 4}, "inf2": {"1": 2}, "inf2x": {"1": 2}}[PLATFORM
 DEV = "trn2" if PLATFORM == "trn2" else "inf2"
 # PyTorch Native Beta 6 (torch 2.13, torch-neuronx 2.13.3, NKI 0.7.0b1). Measured the same speed
 # as Beta 4/5 and the Sep 2026 nightly on this model; it is the newest numbered Beta.
-BETA4 = ("421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:"
-         "2.13.0-neuronx-py312-sdk2.32.0-ubuntu24.04-neurondlcbuilder-development-6516808413-0")
+BETA4 = "<PYTORCH_NATIVE_IMAGE_URI>"  # set NEURON_PTN_IMAGE at run time
 TRACE_BASE = "public.ecr.aws/neuron/pytorch-inference-neuronx:2.9.0-neuronx-py312-sdk2.31.0-ubuntu24.04"
 TAG = f"{PLATFORM}_{PATH}" + (f"_lnc{LNC}" if PLATFORM == "trn2" else "")
 CONC = {"trn2": [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128],
@@ -160,7 +159,7 @@ PLATFORM, PATH, LNC = "{PLATFORM}", "{PATH}", "{LNC}"
 DEV = "{DEV}"
 TAG = "{TAG}"
 NUM_INSTANCES = {NINST}
-BETA4 = "{BETA4}"
+BETA4 = os.environ.get("NEURON_PTN_IMAGE", "{BETA4}")
 TRACE_BASE = "{TRACE_BASE}"
 MODEL_ID = "Alibaba-NLP/gte-multilingual-reranker-base"
 LENGTHS = [128, 256, 512, 768, 1024]

@@ -54,19 +54,6 @@ Measured on trn2.48xlarge (16 NeuronDevices, 64 NeuronCores with LNC=2) with Neu
 | + CP=16 (4x more cores) | ~8.5s | ~2.0x |
 | + Batched CFG (BS=2) | **5.06s** | **3.4x** |
 
-### GPU Comparison
-
-| Config | Time (s) | Notes |
-|--------|----------|-------|
-| **trn2.48xlarge (optimized)** | **~618** | CP=16, batch=2, all 64 cores |
-| trn2.48xlarge (baseline) | ~1224 | CP=4, batch=1, 16 cores only |
-| 1x H100 | 1042 | Warm start, 720P |
-| 4x H100 | 289 | Warm start, 720P |
-| 1x A100 | 2736 | Warm start, 720P |
-| 4x A100 | 725 | Warm start, 720P |
-
-GPU numbers from official Wan 2.2 benchmarks (warm start, 720P).
-
 ### Single-Process with copy_() Expert Swap (Production Target)
 
 Measured on trn2.48xlarge with the copy_() workaround for in-place expert swapping:
@@ -143,7 +130,6 @@ for rank in range(world_size):
 | `run_e2e_single_process.py` | Single-process E2E with copy_() expert swap |
 | `repro_replace_weights.py` | SIGSEGV reproducer with root cause documentation |
 | `run_e2e_cp16_bs2.py` | Subprocess-based E2E (old approach) |
-| `tickets/` | Filed ticket artifacts (V2223857084) |
 
 ## Quick Start
 

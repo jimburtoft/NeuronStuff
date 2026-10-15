@@ -206,8 +206,7 @@ on inf2. With tanh GELU the gap shrinks to 4-11%; see
 
 > **Use `inf2.xlarge`, not `inf2.8xlarge`.** They expose the **same accelerator** -- one
 > Inferentia2 device, 2 NeuronCores, 32 GB -- and measure within 0.9% of each other, which is
-> inside run-to-run noise. inf2.xlarge costs **$0.7582/hr vs $1.9679/hr**, so it delivers
-> **2.57x the throughput per dollar**. The larger size only adds host vCPU and RAM, which this
+> inside run-to-run noise. The larger size only adds host vCPU and RAM, which this
 > workload does not use. See [Instance sizing](#instance-sizing-use-inf2xlarge) below.
 
 ### Earlier — Neuron SDK 2.27/2.28
@@ -322,7 +321,7 @@ batching does the batching work and clients can stay simple. Note that chasing t
 usually the wrong call: **152.8 inf/s at 39.76 ms** versus 154.8 inf/s at 102.56 ms means the
 last **1.3%** of throughput costs **2.6x the latency**. Across runs that tradeoff ranged from
 2.6x to 3.8x, always for under 2% throughput, so **BS=1 with 8 workers is the recommended
-operating point** -- roughly **$1.38 per million inferences**.
+operating point**.
 
 Accuracy, FP32 + auto-cast notebooks: cosine 0.999999, Spearman 1.0000 vs CPU FP32. BF16
 notebooks: cosine 0.999980 (trn2 LNC=1, inf2) and 0.999998 (trn2 LNC=2). In every notebook:
@@ -411,8 +410,6 @@ Same notebook, same compile flags, same 2-instance topology, same benchmark harn
 | NeuronCores | 2 | 2 | — |
 | vCPU | 32 | 4 | -87.5% |
 | Host RAM | 128 GB | 16 GB | -87.5% |
-| On-demand $/hr (us-east-2) | $1.9679 | **$0.7582** | **-61.5%** |
-| **inf/s per $/hr** | 80.0 | **205.8** | **+157.3%** |
 
 **Four independent full runs on two inf2.xlarge instances in two regions** (us-east-2 and
 us-west-2) peaked at **156.7 / 156.5 / 156.1 / 154.8 inf/s** -- a ~1.2% spread. The -0.9% gap
@@ -451,7 +448,7 @@ A deployment with an off-box client has more headroom still.
 ### Recommendation
 
 Use **inf2.xlarge**. Same accelerator, same throughput, same latency, same accuracy (cosine
-0.999999, Spearman 1.0000), **2.57x better throughput per dollar**.
+0.999999, Spearman 1.0000).
 
 Choose a larger inf2 size only if the *host* needs the extra vCPU or RAM for co-located work
 -- client-side tokenization, retrieval, business logic -- or if you need more than one

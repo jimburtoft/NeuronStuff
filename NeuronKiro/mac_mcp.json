@@ -6,8 +6,8 @@
                 "mcp-server-fetch"
             ],
             "env": {
-                "UV_TOOL_DIR": "/Users/jburtoft/.local/share/uv/tools",
-                "UV_CACHE_DIR": "/Users/jburtoft/.cache/uv"
+                "UV_TOOL_DIR": "~/.local/share/uv/tools",
+                "UV_CACHE_DIR": "~/.cache/uv"
             },
             "disabled": false,
             "autoApprove": [
