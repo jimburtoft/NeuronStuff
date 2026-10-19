@@ -42,7 +42,9 @@ full BF16. Every configuration passed the same accuracy checks:
 
 | configuration | peak sequences/s | p50 / p99 at peak (ms) | best sequences/s with p99 <= 100 ms | at concurrency (p50 / p99 ms) |
 |---|---:|---:|---:|---|
-| **trn2.3xlarge, trace, LNC=1, 8 instances** | **3,662** | 145 / 197 | **3,405** | 8 (45 / 63) |
+| **trn2.3xlarge, Native + NKI kernels, LNC=1, 8 instances** | **5,440** | 98 / 132 | **5,393** | 16 (50 / 78) |
+| trn2.3xlarge, Native + NKI kernels, LNC=2, 4 instances | 4,730 | 224 / 267 | 4,680 | 16 (56 / 80) |
+| trn2.3xlarge, trace, LNC=1, 8 instances | 3,662 | 145 / 197 | 3,405 | 8 (45 / 63) |
 | trn2.3xlarge, Native, LNC=1, 8 instances | 3,293 | 163 / 220 | 3,101 | 8 (45 / 69) |
 | trn2.3xlarge, Native, LNC=2, 4 instances | 2,910 | 45 / 74 | 2,910 | 8 (45 / 74) |
 | inf2.xlarge, trace, 2 instances | 792 | 66 / 126 | 771 | 2 (51 / 72) |
@@ -51,7 +53,10 @@ full BF16. Every configuration passed the same accuracy checks:
 | inf2.8xlarge, Native, 2 instances | 727 | 52 / 73 | 727 | 2 (52 / 73) |
 
 Native rows use PyTorch Native Beta 6 with tanh-approximate GELU; see
-[Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu).
+[Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu). The "+ NKI kernels" rows
+replace the model's attention, MLP and LayerNorm blocks with the NKI kernels in
+[`nki_kernels/`](nki_kernels/); see [NKI kernels for PyTorch Native](#nki-kernels-for-pytorch-native).
+They also use finer batch buckets and a 500 us queue delay (30 graphs; see the notebooks).
 
 Per-platform p50 and p99 curves:
 - [trn2](images/example_workload_curves_trn2.png)
@@ -63,16 +68,18 @@ the plots.
 
 ### What this shows
 
+- **PyTorch Native with NKI kernels is now the fastest path on trn2:** **5,440
+  sequences/s at peak** (132 ms p99) and **5,393 sequences/s at a 78 ms p99**. That is +49% over
+  trace at peak, +58% under a 100 ms p99, and +65% over stock Native.
 - **Short sequences are much cheaper than the seq=1024 benchmark suggests.** For this example,
-  trn2 with trace serves **3,405 sequences/s at a 63 ms p99**, and inf2 serves **761 sequences/s
-  at 73 ms**.
+  inf2 serves **761 sequences/s at 73 ms**.
 - **Each device saturates at low concurrency.** trn2 trace saturates at about 8 concurrent calls,
   inf2 at 2-3. Beyond that, more concurrency only adds queueing latency. Pick the concurrency
   from the curve for your latency target.
-- **PyTorch Native is now close to trace.** With tanh GELU (below), trace leads by 11% on trn2
-  and 4-5% on inf2 at peak, and every Native configuration meets a 100 ms p99. Before the GELU
-  change trace led by 1.83x and 1.56x.
-- **inf2.xlarge matches inf2.8xlarge** (same accelerator) at about 40% of the price.
+- **Stock PyTorch Native is close to trace.** With tanh GELU (below), trace leads stock Native by
+  11% on trn2 and 4-5% on inf2 at peak, and every Native configuration meets a 100 ms p99. Before
+  the GELU change trace led by 1.83x and 1.56x.
+- **inf2.xlarge matches inf2.8xlarge** (same accelerator).
 - **Batching pays off far more at 256 tokens than at 1024.** With one call in flight at seq=256,
   trace takes about the same time for 1 to 24 sequences:
 
@@ -80,10 +87,51 @@ the plots.
   |---|---:|---:|---:|---:|---:|
   | trn2 trace, sequences/s | 21 | 176 | 338 | 530 | 535 |
   | trn2 Native LNC=2, sequences/s | 75 | 621 | 706 | 785 | 806 |
+  | trn2 Native + NKI kernels LNC=1, sequences/s | 66 | 602 | 723 | 766 | 798 |
+  | trn2 Native + NKI kernels LNC=2, sequences/s | 109 | 950 | 1207 | 1306 | 1391 |
   | inf2 trace, sequences/s | 18 | 164 | 314 | 493 | 490 |
 
   Native at LNC=2 is about 3.5x faster per core than trace for small calls and still 1.5x faster at
   batch 32, but it has half as many cores, so at the device level trace stays ahead.
+
+### NKI kernels for PyTorch Native
+
+[`nki_kernels/`](nki_kernels/) holds three NKI kernels for this model's NewBERT architecture,
+registered as PyTorch custom ops with `torch_neuronx.nki_op` and applied by one call:
+
+```python
+import os; os.environ.setdefault("NEURON_LOGICAL_NC_CONFIG", "1")   # before the import
+from nki_kernels import patch_model
+model = model.to(torch.bfloat16)          # eager attention, tanh GELU (see below)
+patch_model(model)
+model = torch.compile(model.to("neuron"), backend="neuron", dynamic=False)
+```
+
+| kernel | replaces, per layer | what it does differently from the compiler |
+|---|---|---|
+| `attn_block_kernel.py` | `qkv_proj`, RoPE, masked softmax attention, `o_proj`, residual, `attn_ln` (lengths up to 512) | One kernel for the whole attention half. Q/K weight columns are permuted on the host so rotate-half RoPE needs no transposes; 1/sqrt(d) is folded into the Q weights; the key-padding mask and the softmax denominator ride on an extra contraction row/column of the two attention matmuls; 2-4 short sequences share each projection pass; odd batches at LNC=2 split query tiles across the two cores. |
+| `gated_mlp_kernel.py` | `up_gate_proj`, GELU(gate) x up, `down_proj`, residual, `mlp_ln` | Weights stay on chip; the intermediate activation never goes to HBM. |
+| `res_ln_kernel.py` | embedding LayerNorm; LayerNorm after attention at lengths 768/1024 | Uses the Vector engine's `bn_stats`/`bn_aggr`, which PyTorch Native's LayerNorm lowering does not, and does the residual and bias adds in DMA. |
+
+At lengths 768 and 1024 the attention core runs nkilib's `attention_cte` (the key-padding mask is
+passed as sequence-packing bounds); below 768 the fused block is faster. Shapes a kernel cannot take
+fall back to the stock module.
+
+Measured on trn2.3xlarge, PyTorch Native Beta 6, one call in flight, tanh GELU on both sides:
+
+| full model, length x batch | stock Native, LNC=1 | + NKI kernels, LNC=1 | stock Native, LNC=2 | + NKI kernels, LNC=2 |
+|---|---:|---:|---:|---:|
+| 128 x 32 | 28.4 ms | 17.8 ms | 16.1 ms | 10.2 ms |
+| 256 x 32 | 62.5 ms | 36.6 ms | 34.7 ms | 19.6 ms |
+| 512 x 16 | 75.6 ms | 42.5 ms | 39.0 ms | 22.3 ms |
+
+Accuracy: score correlation with a CPU FP32 reference (exact GELU) of 0.99997-0.99998 over 64-128
+query/passage pairs per length with varied real lengths, and the same top-1/top-5 ranking as stock
+Native. In the Triton notebooks above every length passes cosine >= 0.99998 with the
+correct top-3 and bit-exact padding isolation.
+
+Constraints: head dim 64, number of heads divisible by 4, hidden size divisible by 128, right-padded
+masks, inference only. Set `NEURON_LOGICAL_NC_CONFIG` before importing `nki_kernels`.
 
 ### Why the Native rows use tanh GELU
 
@@ -147,7 +195,10 @@ needs the `-py314` image variant; the default tag fails to import `torch_neuronx
 
 `bert_reranker_triton_example_workload_<platform>_<path>[_lnc<N>].ipynb`, one per configuration,
 with `_executed` copies holding the real output. They are generated by
-`make_triton_example_workload.py <trn2|inf2|inf2x> <trace|native> [lnc]`. Each notebook is
+`make_triton_example_workload.py <trn2|inf2|inf2x> <trace|native|native_nki> [lnc]`; the
+`native_nki` notebooks (trn2) copy the kernels from `nki_kernels/` into the work directory. The
+Native notebooks read the PyTorch Native container image URI from the `NEURON_PTN_IMAGE`
+environment variable. Each notebook is
 self-contained and runs, in order:
 1. compile
 2. accuracy gate
@@ -355,7 +406,10 @@ W, and they have no W=1 rows.
 
 ## Trace vs PyTorch Native
 
-> **Update:** these measurements use PyTorch Native Beta 4 with the model's exact GELU. Exact GELU
+> **Update:** on the example workload, PyTorch Native with the NKI kernels is now faster than
+> trace; see [NKI kernels for PyTorch Native](#nki-kernels-for-pytorch-native).
+>
+> These measurements use PyTorch Native Beta 4 with the model's exact GELU. Exact GELU
 > is the main cause of the gap: switching to tanh GELU makes Native 49-65% faster and within 4-11%
 > of trace. See [Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu).
 
@@ -379,7 +433,8 @@ Same model, full BF16, Triton, same (fixed) benchmark script, every core loaded:
   LNC=2 on trn2; 5.5 min on inf2) into a NEFF cache that is mounted into Triton via
   `TORCH_NEURONX_NEFF_CACHE_DIR`, so every model instance starts in under a minute.
 
-**Recommendation.** For the best throughput today, use trace on SDK 2.31. Trace is deprecated,
+**Recommendation.** Use PyTorch Native with the NKI kernels in `nki_kernels/` (above). Without
+them, trace on SDK 2.31 was the faster path. Trace is deprecated,
 though, and has no environment in SDK 2.32, so plan the move to Native and re-measure it as new
 Native releases land. These numbers come from the PyTorch Native Beta 4 container (torch 2.11.0,
 torch-neuronx 2.11.3, neuronx-cc 2.26).

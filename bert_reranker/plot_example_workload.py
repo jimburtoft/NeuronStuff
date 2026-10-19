@@ -22,8 +22,12 @@ runs = [r for r in runs if r.get("curve")]
 LABEL = {"trn2": "trn2.3xlarge", "inf2": "inf2.8xlarge", "inf2x": "inf2.xlarge"}
 
 
+def kind(r):
+    return "native_nki" if r.get("nki") else r["path"]
+
+
 def lab(r):
-    s = f"{LABEL[r['platform']]} {r['path']}"
+    s = f"{LABEL[r['platform']]} {r['path']}" + (" + NKI kernels" if r.get("nki") else "")
     if r["platform"] == "trn2":
         s += f" LNC={r['lnc']} x{r['instances']}"
     return s
@@ -34,14 +38,14 @@ def best_under(curve, key, limit):
     return max(ok, key=lambda p: p["seq_per_s"]) if ok else None
 
 
-style = {"trace": "-o", "native": "--s"}
+style = {"trace": "-o", "native": "--s", "native_nki": "-^"}
 for plat in sorted({r["platform"] for r in runs}):
     rs = [r for r in runs if r["platform"] == plat]
     fig, ax = plt.subplots(1, 2, figsize=(14, 5.5), sharex=True)
     for r in rs:
         x = [p["seq_per_s"] for p in r["curve"]]
         for a, k in zip(ax, ["p50_ms", "p99_ms"]):
-            a.plot(x, [p[k] for p in r["curve"]], style[r["path"]], label=lab(r))
+            a.plot(x, [p[k] for p in r["curve"]], style[kind(r)], label=lab(r))
     for a, k in zip(ax, ["p50", "p99"]):
         a.set_xlabel("throughput (sequences / s)")
         a.set_ylabel(f"{k} call latency (ms)")
@@ -56,7 +60,7 @@ for plat in sorted({r["platform"] for r in runs}):
 fig, ax = plt.subplots(figsize=(10, 6))
 for r in runs:
     ax.plot([p["seq_per_s"] for p in r["curve"]], [p["p50_ms"] for p in r["curve"]],
-            style[r["path"]], label=lab(r))
+            style[kind(r)], label=lab(r))
 ax.set_xlabel("throughput (sequences / s)")
 ax.set_ylabel("p50 call latency (ms)")
 ax.set_yscale("log")
@@ -71,7 +75,7 @@ limits = [50, 100, 200, 500]
 lines = ["| configuration | peak seq/s | at concurrency | p50 / p99 at peak (ms) | "
          + " | ".join(f"best seq/s, p99 <= {L} ms" for L in limits) + " |",
          "|---|---|---|---|" + "---|" * len(limits)]
-for r in sorted(runs, key=lambda r: (r["platform"], r["path"], r["lnc"])):
+for r in sorted(runs, key=lambda r: (r["platform"], kind(r), r["lnc"])):
     pk = max(r["curve"], key=lambda p: p["seq_per_s"])
     cells = []
     for L in limits:

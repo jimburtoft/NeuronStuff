@@ -45,7 +45,9 @@ sequences/s (= inferences/s), calls/s, and call latency p50/p90/p99. The full cu
 PNG and saved as JSON. A per-shape BS sweep at seq=256 (the bucket carrying ~86% of compute) is
 also measured with one call in flight.
 
-Usage:  make_triton_prodmix.py <trn2|inf2|inf2x> <trace|native> [lnc]
+Usage:  make_triton_example_workload.py <trn2|inf2|inf2x> <trace|native|native_nki> [lnc]
+        native_nki = PyTorch Native + the NKI kernels in ./nki_kernels (trn2; finer batch buckets,
+                     500 us queue delay)
         (inf2x = inf2.xlarge: same device as inf2.8xlarge; reuses artifacts compiled elsewhere)
 """
 import json
@@ -53,6 +55,15 @@ import sys
 
 PLATFORM = sys.argv[1]
 PATH = sys.argv[2]
+NKI = PATH == "native_nki"
+if NKI:
+    PATH = "native"
+import os as _os
+FINE = NKI                         # finer batch buckets (pads less at seq=256)
+QDELAY = 500 if NKI else 2000      # Triton dynamic batcher max_queue_delay_microseconds
+_KDIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "nki_kernels")
+KFILES = ("res_ln_kernel.py", "gated_mlp_kernel.py", "attn_block_kernel.py", "attn_block_pack.py", "nki_kernels.py")
+KSRC = {f: open(_os.path.join(_KDIR, f)).read() for f in KFILES} if NKI else {}
 LNC = sys.argv[3] if len(sys.argv) > 3 else "1"
 NINST = {"trn2": {"1": 8, "2": 4}, "inf2": {"1": 2}, "inf2x": {"1": 2}}[PLATFORM][LNC]
 DEV = "trn2" if PLATFORM == "trn2" else "inf2"
@@ -60,7 +71,7 @@ DEV = "trn2" if PLATFORM == "trn2" else "inf2"
 # as Beta 4/5 and the Sep 2026 nightly on this model; it is the newest numbered Beta.
 BETA4 = "<PYTORCH_NATIVE_IMAGE_URI>"  # set NEURON_PTN_IMAGE at run time
 TRACE_BASE = "public.ecr.aws/neuron/pytorch-inference-neuronx:2.9.0-neuronx-py312-sdk2.31.0-ubuntu24.04"
-TAG = f"{PLATFORM}_{PATH}" + (f"_lnc{LNC}" if PLATFORM == "trn2" else "")
+TAG = f"{PLATFORM}_{PATH}" + ("_nki" if NKI else "") + (f"_lnc{LNC}" if PLATFORM == "trn2" else "")
 CONC = {"trn2": [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128],
         "inf2": [1, 2, 3, 4, 6, 8, 12, 16, 24, 32],
         "inf2x": [1, 2, 3, 4, 6, 8, 12, 16, 24, 32]}[PLATFORM]
@@ -72,7 +83,22 @@ On the PyTorch Native path exact GELU is lowered through FP32 and, on trn2 at se
 about 36 ms of a 99 ms call; tanh GELU stays in BF16 and the call drops to 63 ms (+57%). On CPU in
 FP32 the two GELUs give cosine 0.999995-0.999997 over 64 query/passage pairs at lengths 128-512, the
 same top-1 for every query, and Spearman >= 0.997. The trace path is the same speed with either
-GELU, so the trace notebooks keep the exact GELU.""")
+GELU, so the trace notebooks keep the exact GELU.""") + ("" if not NKI else """
+
+**NKI kernels** (`nki_kernels/`, registered with `torch_neuronx.nki_op`, applied by `patch_model`):
+- **Attention half** of every layer for lengths up to 512 -- `qkv_proj`, rotate-half RoPE, masked
+  softmax attention, `o_proj`, residual add and `attn_ln` -- in one kernel (`attn_block_kernel.py`).
+  Q/K weight columns are permuted on the host so RoPE needs no transposes, the 1/sqrt(d) scale is
+  folded into the Q weights, and the key-padding mask and softmax denominator ride on an extra
+  contraction row/column of the two attention matmuls.
+- **Gated MLP** + residual + `mlp_ln` in one kernel with the weights resident on chip
+  (`gated_mlp_kernel.py`).
+- **LayerNorm** with a fused residual add using the Vector engine's `bn_stats`/`bn_aggr`
+  (`res_ln_kernel.py`); PyTorch Native's own LayerNorm lowering does not use them. Used for the
+  embedding LayerNorm and, at lengths 768/1024, after attention.
+- At lengths 768 and 1024 the attention core runs nkilib's `attention_cte` (key-padding mask passed as
+  sequence-packing bounds); below 768 the fused block above is used.
+Shapes the kernels cannot take fall back to the stock modules.""")
 
 cells = []
 
@@ -158,6 +184,7 @@ def sh(cmd, **kw):
 PLATFORM, PATH, LNC = "{PLATFORM}", "{PATH}", "{LNC}"
 DEV = "{DEV}"
 TAG = "{TAG}"
+QDELAY = {QDELAY}
 NUM_INSTANCES = {NINST}
 BETA4 = os.environ.get("NEURON_PTN_IMAGE", "{BETA4}")
 TRACE_BASE = "{TRACE_BASE}"
@@ -167,15 +194,26 @@ if PATH == "trace":
     # 12 graphs: trace embeds the weights in every graph (~0.75 GB each), so 24 do not fit in
     # per-core HBM. This set minimises padded compute for the traffic mix within that budget.
     BUCKETS = {{128: [8, 32], 256: [24, 28, 32], 512: [4, 8, 32], 768: [4, 32], 1024: [4, 32]}}
+elif {FINE}:
+    # finer batch buckets at the two busiest lengths: padded compute 1.13x -> ~1.06x (30 graphs)
+    BUCKETS = {{128: [1, 2, 4, 6, 8, 12, 16, 32], 256: [8, 12, 16, 20, 24, 28, 32], 512: [2, 4, 8, 16, 32],
+                768: [1, 2, 4, 8, 32], 1024: [1, 2, 4, 8, 32]}}
 else:
     BUCKETS = {{128: [1, 4, 8, 16, 32], 256: [8, 16, 24, 32], 512: [2, 4, 8, 16, 32],
                 768: [1, 2, 4, 8, 32], 1024: [1, 2, 4, 8, 32]}}
 CONCURRENCY = {CONC}
 HOME = os.path.expanduser("~")
 WORK = f"{{HOME}}/prodmix"
-ART = f"{{WORK}}/artifacts_{{PATH}}_{{DEV}}_lnc{{LNC}}"   # compiled graphs / NEFF cache
-REPO = f"{{WORK}}/repo_{{PATH}}_lnc{{LNC}}"
+VAR = PATH + ("_nki" if {NKI} else "")
+ART = f"{{WORK}}/artifacts_{{VAR}}_{{DEV}}_lnc{{LNC}}"   # compiled graphs / NEFF cache
+REPO = f"{{WORK}}/repo_{{VAR}}_lnc{{LNC}}"
 os.makedirs(ART, exist_ok=True)
+NKI = {NKI}
+if NKI:
+    KDIR = f"{{WORK}}/nki_kernels"
+    os.makedirs(KDIR, exist_ok=True)
+    for _fn, _src in {KSRC!r}.items():
+        open(f"{{KDIR}}/{{_fn}}", "w").write(_src)
 
 print(sh(f"NEURON_LOGICAL_NC_CONFIG={{LNC}} neuron-ls")[0])
 print("graphs to compile:", sum(len(v) for v in BUCKETS.values()), BUCKETS)
@@ -303,7 +341,12 @@ for _mod in model.modules():
     for _cn, _c in _mod.named_children():
         if "GELU" in type(_c).__name__:
             setattr(_mod, _cn, torch.nn.GELU(approximate="tanh"))
-model = model.to(torch.bfloat16).to(dev)
+model = model.to(torch.bfloat16)
+if os.environ.get("NKI") == "1":
+    sys.path.insert(0, "/work/nki_kernels")
+    from nki_kernels import patch_model
+    print("NKI layers patched:", patch_model(model), flush=True)
+model = model.to(dev)
 Q = "What are the benefits of renewable energy?"
 P = ["Renewable energy sources like solar and wind power produce electricity without "
      "greenhouse gas emissions, reducing climate change impacts.",
@@ -355,14 +398,14 @@ open(f"{WORK}/precompile_native.sh", "w").write(
 cmd = ["sudo", "docker", "run", "--rm", "--entrypoint", "bash", "--device", "/dev/neuron0",
        "-e", f"NEURON_LOGICAL_NC_CONFIG={LNC}", "-e", f"NEURON_CC_FLAGS=--lnc={LNC}",
        "-e", "NEURON_RT_VISIBLE_CORES=0", "-e", "NEURON_RT_LOG_LEVEL=ERROR",
-       "-e", "TORCH_NEURONX_NEFF_CACHE_DIR=/cache",
+       "-e", "TORCH_NEURONX_NEFF_CACHE_DIR=/cache", "-e", f"NKI={int(NKI)}",
        "-e", "BUCKETS=" + json.dumps({str(k): v for k, v in BUCKETS.items()}),
        "-v", f"{WORK}:/work", "-v", f"{ART}:/cache",
        "-v", f"{HOME}/.cache/huggingface:/root/.cache/huggingface",
        BETA4, "/work/precompile_native.sh"]
 t0 = time.time()
 r = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 3600)
-print("\n".join(l for l in r.stdout.splitlines() if l.startswith(("  L=", "ACCURACY", "NEFF", "dynamo"))))
+print("\n".join(l for l in r.stdout.splitlines() if l.startswith(("  L=", "ACCURACY", "NEFF", "dynamo", "NKI"))))
 print(f"precompile took {(time.time()-t0)/60:.1f} min")
 if "ACCURACY GATE PASSED" not in r.stdout:
     print(r.stderr[-3000:]); raise SystemExit("precompile/accuracy failed")''')
@@ -492,7 +535,13 @@ class TritonPythonModel:
             for _cn, _c in _mod.named_children():
                 if "GELU" in type(_c).__name__:
                     setattr(_mod, _cn, torch.nn.GELU(approximate="tanh"))
-        m = m.to(torch.bfloat16).to(self.dev)
+        m = m.to(torch.bfloat16)
+        if p("NKI", "0") == "1":
+            import sys
+            sys.path.insert(0, "/work/nki_kernels")
+            from nki_kernels import patch_model
+            self._log(f"NKI layers patched: {patch_model(m)}")
+        m = m.to(self.dev)
         self.models = {}
         t0 = time.time()
         for L, bss in sorted(self.buckets.items()):
@@ -569,13 +618,14 @@ instance_group [ {{ kind: KIND_MODEL count: {NUM_INSTANCES} }} ]
 # Triton only merges requests of identical shape, so dynamic batching stays per length.
 dynamic_batching {{
   preferred_batch_size: [ {", ".join(map(str, all_bs))} ]
-  max_queue_delay_microseconds: 2000
+  max_queue_delay_microseconds: {QDELAY}
 }}
 parameters [
   {{ key: "BUCKETS"       value: {{ string_value: "{bjson}" }} }},
   {{ key: "NUM_INSTANCES" value: {{ string_value: "{NUM_INSTANCES}" }} }},
   {{ key: "ARTIFACTS"     value: {{ string_value: "/artifacts" }} }},
-  {{ key: "STAGGER_SEC"   value: {{ string_value: "2" }} }}
+  {{ key: "STAGGER_SEC"   value: {{ string_value: "2" }} }},
+  {{ key: "NKI"           value: {{ string_value: "{int(NKI)}" }} }}
 ]
 """)
 print(open(f"{REPO}/reranker/config.pbtxt").read())''')
@@ -638,7 +688,7 @@ cmd = ["sudo", "docker", "run", "-d", "--name", CONTAINER, "--device", "/dev/neu
        "--shm-size=16g", "-p", "8000:8000", "-p", "8001:8001", "-p", "8002:8002",
        "-e", f"NEURON_LOGICAL_NC_CONFIG={LNC}", "-e", "NEURON_RT_LOG_LEVEL=ERROR",
        "-e", "TOKENIZERS_PARALLELISM=false", "-e", "PYTHONDONTWRITEBYTECODE=1",
-       "-v", f"{REPO}:/models", "-v", f"{ART}:/artifacts",
+       "-v", f"{REPO}:/models", "-v", f"{ART}:/artifacts", "-v", f"{WORK}:/work",
        "-v", f"{HOME}/.cache/huggingface:/root/.cache/huggingface"]
 if PATH == "native":
     cmd += ["-e", f"NEURON_CC_FLAGS=--lnc={LNC}", "-e", "TORCH_NEURONX_NEFF_CACHE_DIR=/artifacts"]
@@ -878,7 +928,7 @@ md("""---
 code(r'''import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-res = {"tag": TAG, "platform": PLATFORM, "path": PATH, "lnc": LNC, "instances": NUM_INSTANCES,
+res = {"tag": TAG, "platform": PLATFORM, "path": PATH, "nki": NKI, "lnc": LNC, "instances": NUM_INSTANCES,
        "example_mix": {str(L): {"pct_calls": v[0], "mean_seq_per_call": v[1]} for L, v in EXAMPLE_MIX.items()},
        "target_seq_pct": {str(L): round(v, 2) for L, v in TARGET_SEQ_PCT.items()},
        "buckets": BUCKETS, "curve": CURVE, "bs_sweep_256": BS_SWEEP,
