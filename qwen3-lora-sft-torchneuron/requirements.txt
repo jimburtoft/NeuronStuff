@@ -1,0 +1,5 @@
+# Installed on top of the DLAMI venv /opt/aws_neuronx_venv_torch_neuronx_2_14_0
+trl==1.16.0
+peft==0.21.2
+transformers>=5.20
+datasets
