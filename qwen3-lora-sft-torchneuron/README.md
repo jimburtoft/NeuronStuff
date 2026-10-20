@@ -5,7 +5,7 @@ Supervised fine-tuning with a LoRA adapter, using only public software:
 - Hugging Face **TRL** `SFTTrainer` with **PEFT** LoRA;
 - standard data parallelism with `torchrun`, or FSDP2 for larger models.
 
-No custom kernels, patches or private images.
+No custom kernels, patches or private images. Requires the Neuron torch-neuronx 2.14.0 DLAMI.
 
 ## 1. Launch an instance
 - **Instance:** `trn2.3xlarge` (1 Trainium2 device, 4 NeuronCores, 96 GB device memory). `trn2.48xlarge` works
@@ -30,13 +30,6 @@ Recommended once per instance, because the compiler can use a lot of host memory
 sudo dd if=/dev/zero of=/swapfile bs=1M count=65536 status=none && sudo chmod 600 /swapfile \
   && sudo mkswap /swapfile && sudo swapon /swapfile
 ```
-<details><summary>No DLAMI available? Manual install on stock Ubuntu Server 26.04</summary>
-
-`bash setup_manual_ubuntu2604.sh` follows the
-[Neuron manual install guide](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/setup/pytorch/manual.html)
-and adds two things: `libarchive13t64`, which the Neuron compiler needs and the stock image lacks, and a swap file.
-Use Ubuntu 26.04 for this path. The pip wheels need glibc 2.43, so they do not import on 24.04.
-</details>
 
 ## 3. Train
 ```bash
