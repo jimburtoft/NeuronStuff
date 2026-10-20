@@ -42,17 +42,22 @@ full BF16. Every configuration passed the same accuracy checks:
 
 | configuration | peak sequences/s | p50 / p99 at peak (ms) | best sequences/s with p99 <= 100 ms | at concurrency (p50 / p99 ms) |
 |---|---:|---:|---:|---|
-| **trn2.3xlarge, Native + NKI kernels, LNC=1, 8 instances** | **5,440** | 98 / 132 | **5,393** | 16 (50 / 78) |
-| trn2.3xlarge, Native + NKI kernels, LNC=2, 4 instances | 4,730 | 224 / 267 | 4,680 | 16 (56 / 80) |
+| **trn2.3xlarge, Native + NKI kernels, LNC=1, 8 instances** | **5,384** | 99 / 133 | **5,361** | 16 (50 / 78) |
+| trn2.3xlarge, Native + NKI kernels, LNC=2, 4 instances | 4,606 | 336 / 391 | 4,589 | 16 (57 / 80) |
 | trn2.3xlarge, trace, LNC=1, 8 instances | 3,662 | 145 / 197 | 3,405 | 8 (45 / 63) |
-| trn2.3xlarge, Native, LNC=1, 8 instances | 3,293 | 163 / 220 | 3,101 | 8 (45 / 69) |
-| trn2.3xlarge, Native, LNC=2, 4 instances | 2,910 | 45 / 74 | 2,910 | 8 (45 / 74) |
+| trn2.3xlarge, Native, LNC=1, 8 instances | 3,396 | 236 / 306 | 3,215 | 8 (44 / 67) |
+| trn2.3xlarge, Native, LNC=2, 4 instances | 2,977 | 44 / 72 | 2,977 | 8 (44 / 72) |
 | inf2.xlarge, trace, 2 instances | 792 | 66 / 126 | 771 | 2 (51 / 72) |
 | inf2.xlarge, Native, 2 instances | 762 | 68 / 130 | 732 | 2 (52 / 72) |
 | **inf2.8xlarge, trace, 2 instances** | 761 | 51 / 73 | **761** | 2 (51 / 73) |
 | inf2.8xlarge, Native, 2 instances | 727 | 52 / 73 | 727 | 2 (52 / 73) |
 
-Native rows use PyTorch Native Beta 6 with tanh-approximate GELU; see
+The trn2 Native rows (with and without NKI kernels) run on the **public Neuron SDK 2.33 release**:
+DLAMI `Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020` with the public
+`public.ecr.aws/neuron/torch-neuronx:2.14.0-neuronx-py314-sdk2.33.0-ubuntu26.04` container
+(torch 2.14.0, torch-neuronx 2.14.3.0). The trace rows and the inf2 Native rows are from SDK 2.31 and
+the PyTorch Native Beta 6 container respectively (see [Test environment](#test-environment)).
+Native rows use tanh-approximate GELU; see
 [Why the Native rows use tanh GELU](#why-the-native-rows-use-tanh-gelu). The "+ NKI kernels" rows
 replace the model's attention, MLP and LayerNorm blocks with the NKI kernels in
 [`nki_kernels/`](nki_kernels/); see [NKI kernels for PyTorch Native](#nki-kernels-for-pytorch-native).
@@ -68,16 +73,16 @@ the plots.
 
 ### What this shows
 
-- **PyTorch Native with NKI kernels is now the fastest path on trn2:** **5,440
-  sequences/s at peak** (132 ms p99) and **5,393 sequences/s at a 78 ms p99**. That is +49% over
-  trace at peak, +58% under a 100 ms p99, and +65% over stock Native.
+- **PyTorch Native with NKI kernels is now the fastest path on trn2:** **5,384
+  sequences/s at peak** (133 ms p99) and **5,361 sequences/s at a 78 ms p99**. That is
+  +47% over trace at peak, +57% under a 100 ms p99, and +59% over stock Native.
 - **Short sequences are much cheaper than the seq=1024 benchmark suggests.** For this example,
   inf2 serves **761 sequences/s at 73 ms**.
 - **Each device saturates at low concurrency.** trn2 trace saturates at about 8 concurrent calls,
   inf2 at 2-3. Beyond that, more concurrency only adds queueing latency. Pick the concurrency
   from the curve for your latency target.
 - **Stock PyTorch Native is close to trace.** With tanh GELU (below), trace leads stock Native by
-  11% on trn2 and 4-5% on inf2 at peak, and every Native configuration meets a 100 ms p99. Before
+  8% on trn2 and 4-5% on inf2 at peak, and every Native configuration meets a 100 ms p99. Before
   the GELU change trace led by 1.83x and 1.56x.
 - **inf2.xlarge matches inf2.8xlarge** (same accelerator).
 - **Batching pays off far more at 256 tokens than at 1024.** With one call in flight at seq=256,
@@ -86,9 +91,9 @@ the plots.
   | batch size, seq=256, one call in flight | 1 | 8 | 16 | 24 | 32 |
   |---|---:|---:|---:|---:|---:|
   | trn2 trace, sequences/s | 21 | 176 | 338 | 530 | 535 |
-  | trn2 Native LNC=2, sequences/s | 75 | 621 | 706 | 785 | 806 |
-  | trn2 Native + NKI kernels LNC=1, sequences/s | 66 | 602 | 723 | 766 | 798 |
-  | trn2 Native + NKI kernels LNC=2, sequences/s | 109 | 950 | 1207 | 1306 | 1391 |
+  | trn2 Native LNC=2, sequences/s | 78 | 631 | 735 | 819 | 843 |
+  | trn2 Native + NKI kernels LNC=1, sequences/s | 60 | 527 | 659 | 725 | 763 |
+  | trn2 Native + NKI kernels LNC=2, sequences/s | 90 | 785 | 1066 | 1214 | 1351 |
   | inf2 trace, sequences/s | 18 | 164 | 314 | 493 | 490 |
 
   Native at LNC=2 is about 3.5x faster per core than trace for small calls and still 1.5x faster at
@@ -117,7 +122,9 @@ At lengths 768 and 1024 the attention core runs nkilib's `attention_cte` (the ke
 passed as sequence-packing bounds); below 768 the fused block is faster. Shapes a kernel cannot take
 fall back to the stock module.
 
-Measured on trn2.3xlarge, PyTorch Native Beta 6, one call in flight, tanh GELU on both sides:
+Measured on trn2.3xlarge, one call in flight, tanh GELU on both sides, with PyTorch Native Beta 6.
+Re-checked at LNC=1 on the public SDK 2.33 container: the NKI column is unchanged (36.6 ms at
+256 x 32, 17.9 ms at 128 x 32), and stock Native is 61.0 ms at 256 x 32 and 28.3 ms at 128 x 32.
 
 | full model, length x batch | stock Native, LNC=1 | + NKI kernels, LNC=1 | stock Native, LNC=2 | + NKI kernels, LNC=2 |
 |---|---:|---:|---:|---:|
@@ -197,8 +204,9 @@ needs the `-py314` image variant; the default tag fails to import `torch_neuronx
 with `_executed` copies holding the real output. They are generated by
 `make_triton_example_workload.py <trn2|inf2|inf2x> <trace|native|native_nki> [lnc]`; the
 `native_nki` notebooks (trn2) copy the kernels from `nki_kernels/` into the work directory. The
-Native notebooks read the PyTorch Native container image URI from the `NEURON_PTN_IMAGE`
-environment variable. Each notebook is
+trn2 Native notebooks use the public SDK 2.33 container
+`public.ecr.aws/neuron/torch-neuronx:2.14.0-neuronx-py314-sdk2.33.0-ubuntu26.04` by default; set
+`NEURON_PTN_IMAGE` to use another torch-neuronx image. Each notebook is
 self-contained and runs, in order:
 1. compile
 2. accuracy gate
@@ -215,8 +223,7 @@ Two things learned while building them, both handled in the notebooks:
 - **PyTorch Native silently falls back to eager after 8 compiled shapes.** `torch._dynamo`'s
   `cache_size_limit` defaults to 8, and past it the model runs uncompiled. With this model on
   Beta 4, the eager path also returned **wrong scores at seq=768, batch 32** (cosine 0.9555). The
-  notebooks raise the limit and check that every graph compiled. The Native notebooks now use
-  Beta 6.
+  notebooks raise the limit and check that every graph compiled.
 - **Warm every path before timing.** Without a full-workload warmup, the first measurement point
   paid first-call costs of over a second per call.
 
@@ -839,7 +846,14 @@ A single combined assertion at a tight tolerance would fail on correct code.
 
 - **inf2.xlarge** (2 NeuronCores -- recommended, see [Instance sizing](#instance-sizing-use-inf2xlarge))
   or **trn2.3xlarge** (8 logical cores at LNC=1)
-- **Deep Learning AMI Neuron (Ubuntu 24.04) 20260813** or later (Neuron SDK 2.31)
+- trn2 Native / NKI notebooks: **Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020** or later
+  (find it with `aws ssm get-parameter --name
+  /aws/service/neuron/dlami/multi-framework/ubuntu-24.04/latest/image_id`). The notebooks pull the
+  public `torch-neuronx` container; nothing else needs installing on the host. The DLAMI's
+  `/opt/aws_neuronx_venv_torch_neuronx_2_14_0` venv has the same torch-neuronx build if you want to use
+  `nki_kernels/` outside a container.
+- trace notebooks: **Deep Learning AMI Neuron (Ubuntu 24.04) 20260813** (Neuron SDK 2.31, the last
+  SDK with `torch_neuronx.trace`)
 - Docker
 - ~300 GB disk (Triton image plus five compiled graphs)
 - **Swap is required before compiling.** The DLAMI ships with none. On inf2.xlarge the
@@ -867,7 +881,18 @@ benchmarks, and cleans up.
 
 ## Test environment
 
-All measurements taken on Neuron SDK 2.31 (DLAMI `20260813`): neuronx-cc `2.26.6360.0`,
+**trn2 PyTorch Native and NKI rows** (example workload): Neuron SDK 2.33.0, DLAMI
+`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020` (driver 2.31.7.0), container
+`public.ecr.aws/neuron/torch-neuronx:2.14.0-neuronx-py314-sdk2.33.0-ubuntu26.04`: torch 2.14.0,
+torch-neuronx 2.14.3.0, neuronx-cc 2.28.7631.0, NKI 0.7.0, Python 3.14, transformers 4.53.3, Triton
+r26.01 python backend built from source on that container. Measured **2026-10-20**.
+
+**inf2 Native rows**: PyTorch Native Beta 6 container (torch 2.13.0, torch-neuronx 2.13.3). The public
+torch-neuronx 2.14 release supports Trn2 and Trn3, so these rows were not re-run on SDK 2.33.
+
+**Per-shape NKI latency table**: PyTorch Native Beta 6 on trn2.3xlarge, DLAMI 20260818 (SDK 2.32).
+
+**Trace rows and the fixed-length benchmarks below**: Neuron SDK 2.31 (DLAMI `20260813`): neuronx-cc `2.26.6360.0`,
 torch-neuronx `2.9.0.2.15.32035`, torch 2.9.1, transformers 4.57.6, Triton Inference Server
 `r26.01` (python backend, built from source on the Neuron PyTorch inference image).
 
