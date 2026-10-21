@@ -40,6 +40,7 @@ def res_ln_kernel(x_hbm, r_hbm, g_hbm, b_hbm, eps=1e-12, has_residual=True):
     n_t = rows_per // P
     r_base = pid * rows_per
     dt = x_hbm.dtype
+    V2 = nisa.get_nc_version() == nisa.nc_version.gen2
 
     y_hbm = nl.ndarray((R, H), dtype=dt, buffer=nl.shared_hbm)
 
@@ -47,6 +48,10 @@ def res_ln_kernel(x_hbm, r_hbm, g_hbm, b_hbm, eps=1e-12, has_residual=True):
     b_sb = nl.ndarray((P, H), dtype=b_hbm.dtype, buffer=nl.sbuf)
     nisa.dma_copy(dst=g_sb, src=g_hbm[0:P, 0:H])
     nisa.dma_copy(dst=b_sb, src=b_hbm[0:P, 0:H])
+    if V2 and b_hbm.dtype != dt:  # gen2: dma_compute with mixed bf16/fp32 sources gives wrong results -> keep beta in the output dtype
+        b_lo = nl.ndarray((P, H), dtype=dt, buffer=nl.sbuf)
+        nisa.tensor_copy(dst=b_lo, src=b_sb)
+        b_sb = b_lo
     eps_sb = nl.ndarray((P, 1), dtype=nl.float32, buffer=nl.sbuf)
     nisa.memset(dst=eps_sb, value=eps)
 

@@ -40,6 +40,19 @@ ATTN_LENGTHS = (128, 256, 384, 512)
 CTE_MIN_LEN = 768          # nkilib attention_cte beats the compiler's attention from here up
 
 
+def _is_gen2():
+    """Inf2 / Trn1 (NeuronCore-v2; NKI target "trn1"). nkilib attention_cte's masked path (RangeSelect)
+    needs Trn2 or newer, so long sequences keep the compiler's attention there."""
+    try:
+        from torch_neuronx.utils import get_platform_target
+        return get_platform_target() == "trn1"
+    except Exception:
+        return False
+
+
+USE_CTE = not _is_gen2()
+
+
 # ------------------------------------------------------------------------------- residual + LayerNorm
 @nki_op("gte_nki::res_ln", mutates_args={})
 def res_ln(x: torch.Tensor, r: torch.Tensor, g: torch.Tensor, b: torch.Tensor, eps: float) -> torch.Tensor:
@@ -115,7 +128,7 @@ def _cte_attention(self, q, k, v, attention_bias, head_mask):
     """q/k/v [B, L, nh, hd]; attention_bias [B, 1, 1, L] additive (0 valid, large negative for right padding)."""
     global _cte
     B, L, nh, hd = q.shape
-    if L < CTE_MIN_LEN or head_mask is not None:
+    if L < CTE_MIN_LEN or head_mask is not None or not USE_CTE:
         return self._stock_attention(q, k, v, attention_bias, head_mask)
     if _cte is None:
         from torch_neuronx import wrap_nki

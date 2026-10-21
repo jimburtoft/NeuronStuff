@@ -67,11 +67,10 @@ KSRC = {f: open(_os.path.join(_KDIR, f)).read() for f in KFILES} if NKI else {}
 LNC = sys.argv[3] if len(sys.argv) > 3 else "1"
 NINST = {"trn2": {"1": 8, "2": 4}, "inf2": {"1": 2}, "inf2x": {"1": 2}}[PLATFORM][LNC]
 DEV = "trn2" if PLATFORM == "trn2" else "inf2"
-# PyTorch Native on trn2: the public torch-neuronx DLC of Neuron SDK 2.33 (torch 2.14.0, torch-neuronx
-# 2.14.3.0, NKI 0.7.0, neuronx-cc 2.28.7631, Python 3.14, Ubuntu 26.04). torch-neuronx 2.14 supports Trn2
-# and Trn3 only, so the inf2 Native notebooks need an image from NEURON_PTN_IMAGE.
-BETA4 = ("public.ecr.aws/neuron/torch-neuronx:2.14.0-neuronx-py314-sdk2.33.0-ubuntu26.04"
-         if PLATFORM == "trn2" else "<PYTORCH_NATIVE_IMAGE_URI>")
+# PyTorch Native: the public torch-neuronx DLC of Neuron SDK 2.33 (torch 2.14.0, torch-neuronx 2.14.3.0,
+# NKI 0.7.0, neuronx-cc 2.28.7631, Python 3.14, Ubuntu 26.04). Measured on trn2 and inf2 (the release notes
+# list Trn2/Trn3; it runs on Inf2 as well). Override with NEURON_PTN_IMAGE.
+BETA4 = "public.ecr.aws/neuron/torch-neuronx:2.14.0-neuronx-py314-sdk2.33.0-ubuntu26.04"
 TRACE_BASE = "public.ecr.aws/neuron/pytorch-inference-neuronx:2.9.0-neuronx-py312-sdk2.31.0-ubuntu24.04"
 TAG = f"{PLATFORM}_{PATH}" + ("_nki" if NKI else "") + (f"_lnc{LNC}" if PLATFORM == "trn2" else "")
 CONC = {"trn2": [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128],

@@ -51,6 +51,7 @@ def gated_mlp_ln_kernel(x_hbm, wupT_hbm, wgT_hbm, wdT_hbm, bd_hbm, g_hbm, b_hbm,
     n_ch = _cdiv(K, fmax)
     csz = K // n_ch
     dt = x_hbm.dtype
+    V2 = nisa.get_nc_version() == nisa.nc_version.gen2      # Inf2 / Trn1: DMA transpose must read HBM
 
     y_hbm = nl.ndarray((R, K), dtype=dt, buffer=nl.shared_hbm)
 
@@ -75,6 +76,10 @@ def gated_mlp_ln_kernel(x_hbm, wupT_hbm, wgT_hbm, wdT_hbm, bd_hbm, g_hbm, b_hbm,
     nisa.dma_copy(dst=ga_sb, src=g_hbm[0:P, 0:K])
     be_sb = nl.ndarray((P, K), dtype=b_hbm.dtype, buffer=nl.sbuf)
     nisa.dma_copy(dst=be_sb, src=b_hbm[0:P, 0:K])
+    if V2 and b_hbm.dtype != dt:  # gen2: dma_compute with mixed bf16/fp32 sources gives wrong results -> keep beta in the output dtype
+        be_lo = nl.ndarray((P, K), dtype=dt, buffer=nl.sbuf)
+        nisa.tensor_copy(dst=be_lo, src=be_sb)
+        be_sb = be_lo
     eps_sb = nl.ndarray((P, 1), dtype=nl.float32, buffer=nl.sbuf)
     nisa.memset(dst=eps_sb, value=eps)
 
@@ -94,7 +99,11 @@ def gated_mlp_ln_kernel(x_hbm, wupT_hbm, wgT_hbm, wdT_hbm, bd_hbm, g_hbm, b_hbm,
             nisa.dma_copy(dst=t, src=x_hbm[nl.ds(rb + rs * P, P), 0:K])
             xr.append(t)
             for kt in range(n_k):
-                nisa.dma_transpose(dst=xt[kt][0:P, rs * P:(rs + 1) * P], src=t[0:P, kt * P:(kt + 1) * P])
+                if V2:
+                    nisa.dma_transpose(dst=xt[kt][0:P, rs * P:(rs + 1) * P],
+                                       src=x_hbm[nl.ds(rb + rs * P, P), kt * P:(kt + 1) * P])
+                else:
+                    nisa.dma_transpose(dst=xt[kt][0:P, rs * P:(rs + 1) * P], src=t[0:P, kt * P:(kt + 1) * P])
 
         # ---- up / gate -> g [I tile, rows] ----
         gl = []
@@ -116,7 +125,8 @@ def gated_mlp_ln_kernel(x_hbm, wupT_hbm, wgT_hbm, wdT_hbm, bd_hbm, g_hbm, b_hbm,
         for rs in range(n_rs):
             s_sb = nl.ndarray((P, K), dtype=nl.float32, buffer=nl.sbuf)
             xb = nl.ndarray((P, K), dtype=nl.float32, buffer=nl.sbuf)
-            nisa.tensor_tensor(dst=xb, data1=xr[rs], data2=bd_sb, op=nl.add, engine=nisa.engine.gpsimd)
+            nisa.tensor_tensor(dst=xb, data1=xr[rs], data2=bd_sb, op=nl.add,
+                               engine=nisa.engine.vector if V2 else nisa.engine.gpsimd)
             for ko in range(n_ko):
                 k0 = ko * FMAX
                 nk = min(FMAX, K - k0)

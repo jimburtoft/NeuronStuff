@@ -94,6 +94,8 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
     n_ch = _cdiv(H, fmax)
     csz = H // n_ch
     dt = x_hbm.dtype
+    V2 = nisa.get_nc_version() == nisa.nc_version.gen2      # Inf2 / Trn1 (NeuronCore-v2)
+    POOL = nisa.engine.vector if V2 else nisa.engine.gpsimd  # gen2 GpSimd cannot run these mixed-dtype ops
 
     y_hbm = nl.ndarray((R, H), dtype=dt, buffer=nl.shared_hbm)
 
@@ -115,6 +117,10 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
     nisa.dma_copy(dst=ga, src=g_hbm[0:P, 0:H])
     be = nl.ndarray((P, H), dtype=b_hbm.dtype, buffer=nl.sbuf)
     nisa.dma_copy(dst=be, src=b_hbm[0:P, 0:H])
+    if V2 and b_hbm.dtype != dt:  # gen2: dma_compute with mixed bf16/fp32 sources gives wrong results -> keep beta in the output dtype
+        be_lo = nl.ndarray((P, H), dtype=dt, buffer=nl.sbuf)
+        nisa.tensor_copy(dst=be_lo, src=be)
+        be = be_lo
     cos_t = nl.ndarray((P, L), dtype=nl.float32, buffer=nl.sbuf)
     sin_t = nl.ndarray((P, L), dtype=nl.float32, buffer=nl.sbuf)
     nisa.dma_copy(dst=cos_t, src=cs_hbm[0, 0:P, 0:L])
@@ -149,9 +155,13 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
         xT = nl.ndarray((P, n_k, LW), dtype=dt, buffer=nl.sbuf)
         for t in range(ntw):
             nisa.dma_copy(dst=xr[:, t, :], src=x_hbm[nl.ds(r0 + t * P, P), 0:H])
-            nisa.tensor_tensor(dst=xb[:, t, :], data1=xr[:, t, :], data2=bo, op=nl.add, engine=nisa.engine.gpsimd)
+            nisa.tensor_tensor(dst=xb[:, t, :], data1=xr[:, t, :], data2=bo, op=nl.add, engine=POOL)
             for kt in range(n_k):
-                nisa.dma_transpose(dst=xT[:, kt, t * P:(t + 1) * P], src=xr[:, t, kt * P:(kt + 1) * P])
+                if V2:
+                    nisa.dma_transpose(dst=xT[:, kt, t * P:(t + 1) * P],
+                                       src=x_hbm[nl.ds(r0 + t * P, P), kt * P:(kt + 1) * P])
+                else:
+                    nisa.dma_transpose(dst=xT[:, kt, t * P:(t + 1) * P], src=xr[:, t, kt * P:(kt + 1) * P])
 
         # ---------------- Q/K projection + bias + RoPE -> qa / ka ----------------
         qa = nl.ndarray((D + 1, NH, LW), dtype=dt, buffer=nl.sbuf)
@@ -172,7 +182,10 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
                     for kt in nl.affine_range(n_k):
                         nisa.nc_matmul(dst=ps, stationary=wqk[:, kt, gi * P:(gi + 1) * P], moving=xT[:, kt, :])
                     pt = nl.ndarray((P, LW), dtype=dt, buffer=nl.sbuf)
-                    nisa.activation(dst=pt, op=nl.copy, data=ps, bias=bqk[:, gi:gi + 1])
+                    if V2:     # gen2: Copy only takes an immediate bias -> Vector add of the bias column
+                        nisa.tensor_scalar(dst=pt, data=ps, op0=nl.add, operand0=bqk[:, gi:gi + 1])
+                    else:
+                        nisa.activation(dst=pt, op=nl.copy, data=ps, bias=bqk[:, gi:gi + 1])
                     pr.append(pt)
                 lo = pr[0]
                 hi = pr[1]
@@ -193,7 +206,11 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
                 for bq in range(quad):
                     h = j * quad + bq
                     rr = bq * half
-                    nisa.tensor_copy(dst=dst_t[0:half, h, :], src=r_lo[rr:rr + half, :], engine=nisa.engine.scalar)
+                    if V2:
+                        nisa.activation(dst=dst_t[0:half, h, :], op=nl.copy, data=r_lo[rr:rr + half, :])
+                    else:
+                        nisa.tensor_copy(dst=dst_t[0:half, h, :], src=r_lo[rr:rr + half, :],
+                                         engine=nisa.engine.scalar)
                     nisa.tensor_copy(dst=dst_t[half:D, h, :], src=r_hi[rr:rr + half, :])
 
         # ---------------- V projection (token-major) + bias -> va (ones column at D) ----------------
@@ -221,7 +238,7 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
             for i in range(nq):
                 xq = nl.ndarray((P, H), dtype=dt, buffer=nl.sbuf)
                 nisa.dma_copy(dst=xq, src=x_hbm[nl.ds(r0 + (qbase + i) * P, P), 0:H])
-                nisa.tensor_tensor(dst=xbq[:, i, :], data1=xq, data2=bo, op=nl.add, engine=nisa.engine.gpsimd)
+                nisa.tensor_tensor(dst=xbq[:, i, :], data1=xq, data2=bo, op=nl.add, engine=POOL)
         s_all = nl.ndarray((P, nq, H), dtype=nl.float32, buffer=nl.sbuf)
         mv_all = nl.ndarray((P, nq, 2), dtype=nl.float32, buffer=nl.sbuf)
         for qi in range(nq):
@@ -247,8 +264,16 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
                 for hl in range(G):
                     nisa.activation(dst=Pm[:, hl, :], op=nl.exp, data=S[:, hl, :], bias=negmax[:, hl:hl + 1])
                 PT = nl.ndarray((P, G, nt, P), dtype=dt, buffer=nl.sbuf)
-                nisa.dma_transpose(dst=PT.ap(pattern=[[G * L, P], [1, 1], [P, G * nt], [1, P]], offset=0),
-                                   src=Pm.ap(pattern=[[G * L, P], [1, 1], [P, G * nt], [1, P]], offset=0))
+                if V2:
+                    PTp = nl.ndarray((P, G, nt, P), dtype=nl.float32, buffer=nl.psum)
+                    for hl in range(G):
+                        for kt in range(nt):
+                            nisa.nc_transpose(dst=PTp[:, hl, kt, :], data=Pm[:, hl, kt * P:(kt + 1) * P],
+                                              engine=nisa.engine.tensor)
+                    nisa.tensor_copy(dst=PT, src=PTp, engine=nisa.engine.vector)
+                else:
+                    nisa.dma_transpose(dst=PT.ap(pattern=[[G * L, P], [1, 1], [P, G * nt], [1, P]], offset=0),
+                                       src=Pm.ap(pattern=[[G * L, P], [1, 1], [P, G * nt], [1, P]], offset=0))
                 O = nl.ndarray((P, G, D + 1), dtype=nl.float32, buffer=nl.psum)
                 for hl in range(G):
                     h = gg * G + hl
@@ -261,11 +286,14 @@ def attn_block_kernel(x_hbm, wqk_hbm, bqk_hbm, wv_hbm, bv_hbm, wo_hbm, bo_hbm, g
                                    data2=rs.ap(pattern=[[G, P], [1, G], [0, D]], offset=0), op=nl.multiply)
 
             # o^T for the output projection
-            oTp = nl.ndarray((P, n_k, P), dtype=dt, buffer=nl.psum)
+            oTp = nl.ndarray((P, n_k, P), dtype=nl.float32 if V2 else dt, buffer=nl.psum)
             for kt in range(n_k):
                 nisa.nc_transpose(dst=oTp[:, kt, :], data=o_sb[:, kt * P:(kt + 1) * P], engine=nisa.engine.tensor)
             oT = nl.ndarray((P, n_k, P), dtype=dt, buffer=nl.sbuf)
-            nisa.tensor_copy(dst=oT, src=oTp, engine=nisa.engine.scalar)
+            if V2:
+                nisa.activation(dst=oT, op=nl.copy, data=oTp)
+            else:
+                nisa.tensor_copy(dst=oT, src=oTp, engine=nisa.engine.scalar)
 
             s_sb = s_all[:, qi, :]
             for ko in range(n_ko):
