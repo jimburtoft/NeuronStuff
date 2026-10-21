@@ -113,6 +113,11 @@ def code(t):
                   "outputs": [], "source": t.splitlines(True)})
 
 
+INF2_WARN = ("" if PATH == "trace" or PLATFORM == "trn2" else """
+
+> **Inf2 is not a supported platform for PyTorch Native** (torch-neuronx supports Trn2 and Trn3). This
+> notebook is experimental: it ran correctly in our tests, but may break in any release. For supported
+> inf2 inference use the trace notebooks (Neuron SDK 2.31).""")
 pathname = ("`torch_neuronx.trace()` (deprecated, SDK 2.31 only)" if PATH == "trace"
             else "PyTorch Native, `torch.compile(backend=\"neuron\")`")
 inst_name = {"trn2": "trn2.3xlarge", "inf2": "inf2.8xlarge", "inf2x": "inf2.xlarge"}[PLATFORM]
@@ -123,7 +128,7 @@ md(f"""# BERT Reranker, example mixed-length workload: {inst_name}, {PATH}{', LN
 behind NVIDIA Triton Inference Server, benchmarked with an **example mixed-length workload**
 rather than a fixed sequence length.
 
-**Path**: {pathname} | **dtype**: full BF16 | **Triton model instances**: {NINST} (one per NeuronCore, each holding every length){GELU_NOTE}
+**Path**: {pathname} | **dtype**: full BF16 | **Triton model instances**: {NINST} (one per NeuronCore, each holding every length){GELU_NOTE}{INF2_WARN}
 
 ## The example workload
 

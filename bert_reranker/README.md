@@ -7,6 +7,11 @@ Deployment and benchmarking of
 Every number in this directory is a **hardware measurement**. Nothing is estimated,
 extrapolated, or simulated.
 
+> **Inf2 is not a supported platform for PyTorch Native.** The torch-neuronx (PyTorch Native) release
+> notes list Trn2 and Trn3 only. The inf2 "Native" rows and notebooks here are experimental: they ran
+> correctly in our tests, but Inf2 is not supported, may break in any release, and should not be used for
+> production. For supported inf2 inference, use `torch_neuronx.trace()` on Neuron SDK 2.31 (the trace rows).
+
 ## Example mixed-length workload (start here)
 
 The other benchmarks in this directory pad every request to 1024 tokens. A reranker in a search
@@ -47,11 +52,11 @@ full BF16. Every configuration passed the same accuracy checks:
 | trn2.3xlarge, trace, LNC=1, 8 instances | 3,662 | 145 / 197 | 3,405 | 8 (45 / 63) |
 | trn2.3xlarge, Native, LNC=1, 8 instances | 3,396 | 236 / 306 | 3,215 | 8 (44 / 67) |
 | trn2.3xlarge, Native, LNC=2, 4 instances | 2,977 | 44 / 72 | 2,977 | 8 (44 / 72) |
-| **inf2.xlarge, Native + NKI kernels, 2 instances** | **1,085** | 47 / 94 | **1,085** | 3 (47 / 94) |
+| **inf2.xlarge, Native + NKI kernels, 2 instances** (unsupported, experimental) | **1,085** | 47 / 94 | **1,085** | 3 (47 / 94) |
 | inf2.xlarge, trace, 2 instances | 792 | 66 / 126 | 771 | 2 (51 / 72) |
-| inf2.xlarge, Native, 2 instances | 817 | 161 / 244 | 759 | 2 (50 / 69) |
+| inf2.xlarge, Native, 2 instances (unsupported, experimental) | 817 | 161 / 244 | 759 | 2 (50 / 69) |
 | inf2.8xlarge, trace, 2 instances | 761 | 51 / 73 | 761 | 2 (51 / 73) |
-| inf2.8xlarge, Native, 2 instances | 727 | 52 / 73 | 727 | 2 (52 / 73) |
+| inf2.8xlarge, Native, 2 instances (unsupported, experimental) | 727 | 52 / 73 | 727 | 2 (52 / 73) |
 
 The trn2 and inf2.xlarge Native rows (with and without NKI kernels) run on the **public Neuron SDK 2.33
 release**: DLAMI `Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020` with the public
@@ -77,7 +82,8 @@ the plots.
 - **PyTorch Native with NKI kernels is now the fastest path on trn2:** **5,381
   sequences/s at a 79 ms p99**. That is +47% over trace at peak, +58% under a 100 ms p99,
   and +58% over stock Native.
-- **The same kernels run on inf2.** On inf2.xlarge, Native + NKI kernels serves **1,085 sequences/s**
+- **The same kernels run on inf2 (unsupported, experimental -- see the warning at the top).** On
+  inf2.xlarge, Native + NKI kernels serves **1,085 sequences/s**
   at a 94 ms p99, +37% over trace and +33% over stock Native on the same
   instance.
 - **Short sequences are much cheaper than the seq=1024 benchmark suggests.** For this example,
@@ -123,7 +129,8 @@ model = torch.compile(model.to("neuron"), backend="neuron", dynamic=False)
 | `gated_mlp_kernel.py` | `up_gate_proj`, GELU(gate) x up, `down_proj`, residual, `mlp_ln` | Weights stay on chip; the intermediate activation never goes to HBM. |
 | `res_ln_kernel.py` | embedding LayerNorm; LayerNorm after attention at lengths 768/1024 | Uses the Vector engine's `bn_stats`/`bn_aggr`, which PyTorch Native's LayerNorm lowering does not, and does the residual and bias adds in DMA. |
 
-The kernels run on Trainium2 and on Inferentia2 / Trainium1 (NeuronCore-v2). On NeuronCore-v2 they take
+The kernels run on Trainium2 and, **experimentally and unsupported**, on Inferentia2 / Trainium1
+(NeuronCore-v2), where PyTorch Native itself is not a supported platform. On NeuronCore-v2 they take
 a few different code paths, chosen at compile time with `nisa.get_nc_version()`:
 - the DMA transposes read x from HBM (on-chip-to-on-chip DMA transposes are not available);
 - the attention probabilities are transposed on the Tensor engine;
@@ -153,7 +160,7 @@ Native. In the Triton notebooks above every length passes cosine >= 0.99998 with
 correct top-3 and bit-exact padding isolation.
 
 Constraints: head dim 64, number of heads divisible by 4, hidden size divisible by 128, right-padded
-masks, inference only. Tested on trn2.3xlarge and inf2.xlarge. Set `NEURON_LOGICAL_NC_CONFIG` before importing `nki_kernels`.
+masks, inference only. Tested on trn2.3xlarge, and on inf2.xlarge (unsupported). Set `NEURON_LOGICAL_NC_CONFIG` before importing `nki_kernels`.
 
 ### Why the Native rows use tanh GELU
 
@@ -861,7 +868,7 @@ A single combined assertion at a tight tolerance would fail on correct code.
 
 - **inf2.xlarge** (2 NeuronCores -- recommended, see [Instance sizing](#instance-sizing-use-inf2xlarge))
   or **trn2.3xlarge** (8 logical cores at LNC=1)
-- Native / NKI notebooks (trn2 and inf2.xlarge): **Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020** or later
+- Native / NKI notebooks (trn2; inf2.xlarge unsupported, see the warning at the top): **Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020** or later
   (find it with `aws ssm get-parameter --name
   /aws/service/neuron/dlami/multi-framework/ubuntu-24.04/latest/image_id`). The notebooks pull the
   public `torch-neuronx` container; nothing else needs installing on the host. The DLAMI's
@@ -902,8 +909,9 @@ benchmarks, and cleans up.
 torch-neuronx 2.14.3.0, neuronx-cc 2.28.7631.0, NKI 0.7.0, Python 3.14, transformers 4.53.3, Triton
 r26.01 python backend built from source on that container. Measured **2026-10-20**.
 
-**inf2.xlarge Native and NKI rows**: same SDK 2.33 DLAMI and public container as trn2. The torch-neuronx 2.14
-release notes list Trn2 and Trn3; on inf2.xlarge it ran this model correctly (one caveat: there is no
+**inf2.xlarge Native and NKI rows (unsupported platform)**: same SDK 2.33 DLAMI and public container as trn2.
+PyTorch Native is **not supported on Inf2** (the torch-neuronx 2.14 release notes list Trn2 and Trn3); on
+inf2.xlarge it ran this model correctly in our tests (one caveat: there is no
 on-device random number generator, so create random tensors on the CPU). Measured **2026-10-20**.
 
 **inf2.8xlarge Native row**: PyTorch Native Beta 6 container (torch 2.13.0, torch-neuronx 2.13.3).
