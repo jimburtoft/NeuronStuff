@@ -1,31 +1,27 @@
-# Running GPT-OSS-20B on Trainium2 with vLLM + vllm-neuron (Neuron SDK 2.32)
+# Running GPT-OSS-20B on Trainium2 with vLLM + vllm-neuron (Neuron SDK 2.33)
 
-Tested and working **2026-10-01** on a `trn2.3xlarge` using the **Neuron SDK 2.32 DLAMI (20260818)**.
-The `gpt_oss_run.py` in this directory was run verbatim, as downloaded from this repo, on a fresh
-instance.
+Tested on a `trn2.3xlarge` with the public **Neuron SDK 2.33 DLAMI**
+(`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`), 2026-10-20.
 
-GPT-OSS does **not** run out of the box on Trainium2. The stock invocation fails in about 9 seconds.
-It needs **three configuration changes**, documented below. The good news: all three are
-configuration — **no source patches, no forks, no custom kernels.**
+The DLAMI's stock vllm-neuron runs GPT-OSS, but slowly and only with extra flags. This guide installs
+two public branches on top of the DLAMI's vLLM environment. They carry the GPT-OSS changes we have
+validated on Trainium2:
 
-This document covers only what is required to get it running. No performance tuning.
+| Branch | What it is |
+|---|---|
+| [`jimburtoft/vllm-neuron@gptoss-trn2-perf-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/gptoss-trn2-perf-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus GPT-OSS model changes: FP8 expert weights, faster prefill and decode, and start-up fixes |
+| [`jimburtoft/nki-library@gptoss-trn2-perf-2.33`](https://github.com/jimburtoft/nki-library/tree/gptoss-trn2-perf-2.33) | NKI Library 2.33 plus small changes to five kernels (MoE decode, MoE prefill, attention). See [`GPT_OSS_TRN2_PATCHES.md`](https://github.com/jimburtoft/nki-library/blob/gptoss-trn2-perf-2.33/GPT_OSS_TRN2_PATCHES.md) |
 
----
+Both are drop-in replacements for the DLAMI's copies. The model code detects the patched kernels and
+still works with the stock NKI Library, just more slowly.
 
-## Why the obvious approach fails
+Compared with the DLAMI's stock plugin, same instance (details in [Results](#results)):
 
-OpenAI ships `openai/gpt-oss-20b` in **MXFP4** (4-bit microscaling). Its `config.json` contains:
-
-```json
-"quantization_config": { "quant_method": "mxfp4" }
-```
-
-MXFP4 *compute* requires NeuronCore-v4 (Trainium3). Trainium2 is NeuronCore-v3, so it cannot
-execute MXFP4 matmuls. vllm-neuron **does** ship an MXFP4→BF16 dequantizer that runs on the host at
-load time, but you have to ask for it explicitly — and the error you get if you don't is unhelpful.
-
-So on Trainium2 the model runs in **BF16**. The MXFP4 weights are dequantized while loading, which
-means HBM holds roughly 4x the on-disk checkpoint size. That is expected, not a misconfiguration.
+- **Time to first token: 5.5x lower** (51 ms vs 283 ms at 128 tokens, 412 ms vs 2,262 ms at 4,096 tokens).
+- **Decode: 1.7-2.1x faster per step** (5.1 ms vs 8.5 ms at batch 1, 20.7 ms vs 43.8 ms at batch 32).
+- **Served throughput: 2.0-3.5x with ~400-token prompts and 3.3-5.8x with ~4,000-token prompts**, from 1 to 32 concurrent requests.
+- **No `--hf-overrides` and no `NEURON_SKIP_EFA_AFFINITY`** needed. The published checkpoint starts as is.
+- **GSM8K accuracy unchanged** within run-to-run noise.
 
 ---
 
@@ -33,295 +29,245 @@ means HBM holds roughly 4x the on-disk checkpoint size. That is expected, not a 
 
 | Setting | Value |
 |---|---|
-| Instance type | `trn2.3xlarge` (4 logical NeuronCores at LNC=2) |
-| AMI name | **`Deep Learning AMI Neuron (Ubuntu 24.04) 20260818`** |
-| Neuron SDK | **2.32** |
-| Disk | **600 GB gp3** minimum |
+| Instance type | `trn2.3xlarge` (1 Trainium2 device, 4 logical NeuronCores at LNC=2) |
+| AMI name | **`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`** |
+| Neuron SDK | **2.33** |
+| Disk | **300 GB gp3** minimum (600 GB if you keep several compile caches) |
 
-`trn2` instances require a **Capacity Block** (`trn1` and `inf2` do not).
+`trn2` instances need a **Capacity Block**.
 
-AMI IDs — verified 2026-09-30:
+AMI IDs (verified 2026-10-23):
 
 | Region | AMI ID |
 |---|---|
-| us-east-1 (N. Virginia) | `ami-0f8b952eba2c08d62` |
-| us-east-2 (Ohio) | `ami-0222021b369f03219` |
-| us-west-2 (Oregon) | `ami-05a802a92b721afb9` |
-| sa-east-1 (São Paulo) | `ami-06f5c32a48089ad7a` |
-| ap-southeast-4 (Melbourne) | `ami-01f66e576e60931ed` |
+| us-east-1 (N. Virginia) | `ami-091af6c736073d840` |
+| us-east-2 (Ohio) | `ami-02eaa082292ed0cf9` |
+| us-west-2 (Oregon) | `ami-0188c2226a35a50e8` |
+| sa-east-1 (São Paulo) | `ami-017da676c0eb9337d` |
+| ap-southeast-4 (Melbourne) | `ami-042081cf4060ec468` |
 
-Look it up yourself in any other region:
+Any other region:
 
 ```bash
 aws ec2 describe-images --owners amazon --region <REGION> \
-  --filters "Name=name,Values=Deep Learning AMI Neuron (Ubuntu 24.04) 20260818" \
+  --filters "Name=name,Values=Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020" \
   --query 'Images[*].[ImageId,Name]' --output table
 ```
 
-**On disk size**: 300 GB is the usual recommendation, but GPT-OSS-20B needs more. `hf download`
-pulls ~39 GB (the repo includes `metal/` and `original/` subdirectories you don't need, on top of the
-13.7 GB of safetensors), and the compiler cache plus a swap file add more. 600 GB avoids trouble.
+### Add swap first
 
-### Add swap before you do anything else
-
-The DLAMI ships with **zero** swap, and `neuronx-cc` wants ~40-45 GB of host RAM per graph. Without
-swap, compilation can be OOM-killed, and the error message blames the compiler rather than memory.
+The DLAMI ships with **no swap**, and `neuronx-cc` can use 40+ GB of host RAM per graph. When it runs
+out of memory, the error blames the compiler, not memory.
 
 ```bash
 sudo dd if=/dev/zero of=/swapfile bs=1M count=65536 status=none
 sudo chmod 600 /swapfile
-sudo mkswap --force /swapfile     # --force is REQUIRED on this DLAMI's kernel
+sudo mkswap --force /swapfile     # --force is REQUIRED on this kernel; without it mkswap silently does nothing
 sudo swapon /swapfile
 free -g                            # confirm ~63 GB swap
 ```
 
-`sudo mkswap` without `--force` silently does nothing on this kernel. Check `free -g`.
-
 ---
 
-## 2. Activate the environment
+## 2. Install the two branches into the DLAMI's vLLM environment
 
 ```bash
-source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_24_0_1_1_0/bin/activate
+source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate
+
+pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/vllm-neuron.git@gptoss-trn2-perf-0.29"
+pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/nki-library.git@gptoss-trn2-perf-2.33"
+rm -rf ~/.cache/neuron_libtorch     # the compile cache does not notice kernel changes; start clean
 ```
 
-Exact versions in that venv, as verified on the instance:
+Check that both took effect:
+
+```bash
+python -c "
+from nkilib.core.moe.moe_tkg import selective_expert_impl as m
+import vllm_neuron.vllm.platform as p
+print('patched kernels:', getattr(m, 'SUPPORTS_GATE_UP_MAJOR', False))
+print('patched plugin: ', hasattr(p.NeuronPlatform, '_cap_memory_for_gpt_oss_fp8'))"
+# patched kernels: True
+# patched plugin:  True
+```
+
+Why the flags matter:
+
+- **`--force-reinstall` is required for vllm-neuron.** The branch has the same version number as the
+  DLAMI's plugin (`0.29.0.1.2.0`). A plain `pip install git+...` builds the branch, decides the
+  requirement "is already satisfied", and **installs nothing**. You would run the stock plugin
+  without knowing.
+- **`--no-deps`** keeps the DLAMI's pinned torch, vllm and nki versions.
+- **Always `source .../activate`.** Calling `/opt/.../bin/python` directly fails at the first compile
+  (`posix_spawn failed: No such file or directory`), because the plugin starts `neuronx-cc` from `PATH`.
+
+Versions in the environment after the install:
 
 | Component | Version |
 |---|---|
-| vllm | `0.24.0` |
-| **vllm-neuron** | **`0.24.0.1.1.0`** |
-| neuronx-cc | `2.27.5334.0+f702b353` |
-| nki | `0.6.0+31049202112.g85070674` |
-| torch / torch-xla | `2.11.0` / `2.11.0` |
-| transformers | `5.15.0` |
-| numpy | `2.3.5` |
-| libtorch-neuronx-lite | `2.11.0.1.0.1284+f49d8626` |
-
-Host packages (`dpkg -l | grep aws-neuronx`):
-
-| Package | Version |
-|---|---|
-| aws-neuronx-dkms | `2.30.2.0` |
-| aws-neuronx-runtime-lib | `2.34.10.0-ac18d186d` |
-| aws-neuronx-collectives | `2.34.10.0-74eaafac6` |
-| aws-neuronx-tools | `2.32.28.0-526c2b7f6` |
-
-One thing to know about this venv: it ships `libtorch-neuronx-lite`, not full `torch-neuronx`, so
-`import torch_neuronx` fails and there is no `torch_neuronx.trace()`. That is fine here — vllm-neuron
-owns the device path for vLLM serving. It only matters if you wanted to trace a model yourself.
-
-Confirm the hardware:
-
-```bash
-neuron-ls
-# trn2.3xlarge -> 1 device, 4 cores, 96 GB, logical-neuroncore-config: 2
-```
+| vllm | `0.29.0` |
+| vllm-neuron | `0.29.0.1.2.0` (branch `gptoss-trn2-perf-0.29`) |
+| nki | `0.7.0` |
+| NKI Library | branch `gptoss-trn2-perf-2.33` |
+| neuronx-cc | `2.28.7631.0` |
+| torch | `2.13.0` |
+| Neuron driver / runtime | `2.31.7.0` / `2.35.30.0` |
 
 ---
 
 ## 3. Download the model
 
 ```bash
-hf download openai/gpt-oss-20b --local-dir ~/models/gpt-oss-20b
+hf download openai/gpt-oss-20b --local-dir ~/models/gpt-oss-20b --exclude "original/*" --exclude "metal/*"
 ```
 
-Takes a few minutes. You only need the three `model-*.safetensors` files plus the configs and
-tokenizer; the `metal/` and `original/` directories are other formats and are not used here.
+`original/` and `metal/` are other formats and are not used.
 
 ---
 
-## 4. The three required changes
-
-### Change 1 — set `NEURON_SKIP_EFA_AFFINITY=1`
+## 4. Serve it
 
 ```bash
-export NEURON_SKIP_EFA_AFFINITY=1
+source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate
+
+vllm serve ~/models/gpt-oss-20b \
+  --tensor-parallel-size 4 \
+  --max-model-len 8192 \
+  --max-num-batched-tokens 512 \
+  --max-num-seqs 64 \
+  --block-size 128 \
+  --no-enable-prefix-caching \
+  --additional-config '{"neuron_config": {
+      "quantization": "fp8",
+      "decode_context_length_buckets": [1024, 2048, 4096, 7168],
+      "on_device_sampling_config": {"all_greedy": true}}}'
 ```
 
-Without this, **all four tensor-parallel workers die immediately**:
+**The first start compiles for about 25-50 minutes.** Run it in `tmux` or `screen`. Later starts reuse
+the compile cache (`~/.cache/neuron_libtorch`). The server is ready when the log shows
+`Application startup complete`.
 
-```
-FileNotFoundError: [Errno 2] No such file or directory:
-  '/sys/bus/pci/devices/0000:c9:00.0/infiniband'
-```
+What the settings do:
 
-`trn2.3xlarge` has no EFA device. vllm-neuron tries to set EFA affinity unconditionally. The library's
-own error text concedes this is "a CPU performance optimization, not a correctness requirement" and
-names this environment variable as the fix — it just doesn't apply it automatically. (The message
-mentions `trn3 3xlarge`, but the same thing happens on `trn2.3xlarge`.)
+| Setting | Why |
+|---|---|
+| `--tensor-parallel-size 4` | Uses all 4 cores of the device. This is the fastest layout we measured. Two TP=2 copies on one device were slower (see [Notes](#notes)). |
+| `"quantization": "fp8"` | Stores the expert weights as FP8 (converted exactly from the MXFP4 checkpoint), so decode reads half as many bytes. A BF16 copy of the experts is kept for prefill. Because of that copy, the plugin lowers `gpu_memory_utilization` from 0.92 to 0.80 and logs a warning. That is expected. |
+| `--max-num-batched-tokens 512` | Best for prompts up to ~500 tokens. **Use `2048` if most prompts are longer** (see [Results](#results)). The value must be one of 512, 1024, 2048, 4096 or 8192. |
+| `decode_context_length_buckets` | Compiles decode at several context lengths, so short requests do not pay for `max_model_len` on every step. |
+| `"all_greedy": true` | Skips the general sampler. Remove it if you need temperature or top-p sampling. |
+| `--no-enable-prefix-caching` | Our numbers are without prefix caching. It works (it needs a `max-num-batched-tokens` from the list above), but we have not measured it. |
+| `--max-num-seqs 64` | Throughput peaks at about 64 concurrent requests. More concurrency made it slower. |
 
-### Change 2 — select the BF16 path, in two places
+`quantization: "bf16"` also works. It is slower at decode (6.0 vs 5.1 ms per step at batch 1) and
+has the same prefill.
 
-Both of these are needed. Either alone is not enough:
-
-```python
-hf_overrides={"quantization_config": None}
-additional_config={"neuron_config": {"quantization": "bf16"}}
-```
-
-Without them:
-
-```
-ValidationError: Value error, gpt_oss_mxfp4 quantization is currently not supported in neuron.
-```
-
-vLLM checks the checkpoint's quantization method against the Neuron platform's allowlist, which
-contains only `neuron_quant`, `compressed-tensors`, and `modelopt`. `gpt_oss_mxfp4` isn't on it, so
-the model is rejected before vllm-neuron's own GPT-OSS code is ever reached.
-
-- `hf_overrides={"quantization_config": None}` hides the checkpoint's MXFP4 marker so that allowlist
-  check passes.
-- `additional_config` then explicitly selects the BF16 implementation, which triggers the host-side
-  MXFP4→BF16 dequantization at load.
-
-Setting only `additional_config` still fails — the vLLM-level check runs first. Setting only
-`hf_overrides` is fragile, because you are then relying on a fallback rather than asking for BF16.
-
-> Worth knowing: vllm-neuron contains a much more helpful message —
-> `quantization='mxfp4' is not supported on TRN2. Please use quantization='bf16'` — but the generic
-> vLLM check fires first, so you never see it. If you hit the `gpt_oss_mxfp4` error, that second
-> message is the one that actually tells you what to do.
-
-### Change 3 — set `max_num_batched_tokens`
-
-```python
-max_num_batched_tokens=2048    # or 512, 1024, 4096, 8192
-```
-
-Without it:
-
-```
-ValueError: Automatic Prefix Caching (APC) requires segmented prefill to be enabled.
-Either disable APC with '--no-enable-prefix-caching' or set 'max_num_batched_tokens' to a
-supported segmented prefill size [512, 1024, 2048, 4096, 8192] to auto-enable segmented prefill.
-```
-
-In vLLM 0.24, both `enable_prefix_caching` and `enable_chunked_prefill` default to `True`, but the
-default `max_num_batched_tokens` is not one of the supported segmented-prefill sizes — so the two
-defaults contradict each other. Pick a value from that list. The value also bounds how many tokens are
-processed per prefill step, so choose one comfortably above your typical prompt length (2048 was used
-for the testing here; we did not probe the behaviour of a prompt longer than the chosen bucket).
-
----
-
-## 5. Working example
-
-```python
-# gpt_oss_run.py
-import os
-from vllm import LLM, SamplingParams
-
-llm = LLM(
-    model=os.path.expanduser("~/models/gpt-oss-20b"),
-    tensor_parallel_size=4,            # 4 logical cores at LNC=2; TP=4 is REQUIRED (see below)
-    max_model_len=4096,
-    max_num_seqs=4,
-    trust_remote_code=True,
-
-    max_num_batched_tokens=2048,                                    # Change 3
-    hf_overrides={"quantization_config": None},                     # Change 2a
-    additional_config={"neuron_config": {"quantization": "bf16"}},   # Change 2b
-)
-
-prompts = [
-    "Explain in two sentences why the sky appears blue.",
-    "Write a Python function that reverses a linked list.",
-    "What is 17 * 24? Show your reasoning briefly.",
-]
-
-outputs = llm.generate(prompts, SamplingParams(temperature=0.0, max_tokens=128))
-for o in outputs:
-    print(f"\n--- {o.prompt}\n{o.outputs[0].text}")
-```
+Query it:
 
 ```bash
-source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_24_0_1_1_0/bin/activate
-export NEURON_SKIP_EFA_AFFINITY=1          # Change 1
-python gpt_oss_run.py
+curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "'$HOME'/models/gpt-oss-20b",
+  "messages": [{"role": "user", "content": "Explain in two sentences why the sky appears blue."}],
+  "max_tokens": 256}' | python -m json.tool
 ```
 
-**First run takes about 7-8 minutes** (456 s measured) for weight loading, MXFP4→BF16 dequantization,
-and compilation. Later runs reuse the compiler cache and start much faster.
-
-Use `tmux` or `screen`. If your SSH session drops during compilation, `nohup` and `setsid` will not
-reliably save the process.
-
-### Confirmed output
-
-```
-BS=1: 128 tokens in 1.92 s = 66.8 tok/s
-Batch of 3: 384 tokens in 4.60 s = 83.5 tok/s aggregate
-```
-
-Sample generation:
-
-> *The sky appears blue because of Rayleigh scattering of sunlight by the atmosphere, which scatters
-> shorter wavelengths of light more efficiently than longer wavelengths.*
-
-Batching works correctly — no cross-request contamination. These numbers are from an untuned
-configuration; they are a correctness check, not a benchmark.
-
-**You will see a traceback at the very end. Ignore it.** After all output has printed, vLLM's
-shutdown path calls `torch.accelerator.empty_cache()`, which has no Neuron implementation:
-
-```
-RuntimeError: device_allocator INTERNAL ASSERT FAILED at ".../CachingDeviceAllocator.h":252,
-please report a bug to PyTorch. Allocator for neuron is not a DeviceAllocator.
-```
-
-This happens *after* generation completes and the process still exits **0**. It is cosmetic. Check
-for your generated text above it rather than reacting to the traceback.
+For offline (Python) use, see [`gpt_oss_run.py`](./gpt_oss_run.py). It uses the same settings.
 
 ---
 
-## Notes and gotchas
+## Results
 
-**`tensor_parallel_size=4` is required.** `tensor_parallel_size=1` fails while loading weights:
+trn2.3xlarge, SDK 2.33 DLAMI, TP=4, `max_model_len` 8192, greedy, prefix caching off. Every run uses
+the same synthetic prompts.
 
-```
-ERROR - checkpoints.py:630 - [Rank 0] Error in device_load_checkpoint: nrt_tensor_allocate status=4
-```
+### Prefill and decode (offline, `max-num-batched-tokens 512`)
 
-20B in BF16 does not fit on one LNC=2 core (24 GB). TP=4 spreads it across all four cores on the chip.
+| | stock DLAMI plugin (BF16) | **these branches, FP8** | these branches, BF16 |
+|---|---:|---:|---:|
+| Time to first token, 128 / 512 / 2,048 / 4,096 tokens (ms) | 283 / 285 / 1,124 / 2,262 | **51 / 57 / 201 / 412** | 51 / 58 / 202 / 412 |
+| Decode step, batch 1 / 8 / 32 (ms) | 8.5 / 36.5 / 43.8 | **5.1 / 17.8 / 20.7** | 6.0 / 23.5 / 26.3 |
 
-**Greedy decoding is not reproducible.** With `temperature=0.0`, six identical requests produced two
-different outputs. The cause is the continuous-batching scheduler: setting `max_num_seqs=1` gives
-bit-identical results every time. If you are comparing outputs or validating accuracy, use
-`max_num_seqs=1` and accept the lower throughput.
+With `max-num-batched-tokens 2048`, FP8 time to first token at 2,048 / 4,096 tokens drops to
+132 / 257 ms. Short prompts get a little slower (81 ms at 128 tokens).
 
-**Don't expect much from batching.** 4x the batch size gave roughly 1.5x the aggregate throughput on
-a single chip. Scale with more replicas rather than larger batches.
+These offline runs set `VLLM_NEURON_BACKEND=vllm_neuron` (the XLA compile route). The served runs
+below use the plugin's default route, which is what `vllm serve` above gets. The served numbers match
+the same configurations measured on the XLA route within 1-3%, so you do not need to set it.
 
-**`neuron_config.fp8_packed_kv=True` is silently ignored** on this path. It is accepted without
-warning and has no effect — don't assume you've reduced KV-cache memory. `kv_cache_dtype="fp8"` fails
-outright at engine init.
+### Served throughput (`vllm serve`, 128 output tokens per request)
 
-**Version pinning matters.** This was tested on SDK 2.32 / DLAMI `20260818` with
-vllm-neuron `0.24.0.1.1.0`. The GPT-OSS support and the `neuron_config.quantization` option used here
-arrived in the vllm-neuron 0.2x series; older plugin versions do not have this code path, and the
-SDK 2.32 runtime ABI differs from earlier SDKs. Use this DLAMI, or a later one with
-vllm-neuron >= 0.24.
+Output tokens/s at 1 / 4 / 16 / 32 / 64 concurrent requests:
+
+| Configuration | ~400-token prompts | ~4,000-token prompts |
+|---|---|---|
+| stock DLAMI plugin (BF16)\* | 92 / 135 / 196 / 264 / - | 35 / 40 / 42 / 40 / - |
+| **FP8, `max-num-batched-tokens 512`** | **177 / 381 / 634 / 923 / 1,014** | 111 / 172 / 210 / 234 / 237 |
+| **FP8, `max-num-batched-tokens 2048`** | 170 / 349 / 552 / 758 / 779 | **133 / 229 / 301 / 354 / 345** |
+
+\* 1 to 32 concurrent requests only, with `--max-num-seqs 32`, `max-num-batched-tokens 512`,
+`NEURON_SKIP_EFA_AFFINITY=1` and `--hf-overrides`.
+
+- **Short prompts: use 512.** Peak is about 1,000 output tokens/s at 64 concurrent requests.
+- **Long prompts: use 2048.** It gives 1.3-1.5x the throughput of 512 at 4 or more concurrent requests.
+  A BF16 run with 2048 reached 380 tokens/s at 64 concurrent requests. That is within run-to-run
+  noise of FP8, so we have not seen a real difference between the two for long prompts.
+- **More than 64 concurrent requests made it slower.** Each decode step got slower faster than the
+  batch grew.
+
+### Accuracy
+
+GSM8K chain-of-thought, 250 questions, flexible-extract:
+
+| | Score |
+|---|---:|
+| stock DLAMI plugin (BF16) | 0.876 |
+| these branches, FP8 | 0.856-0.868 (three runs) |
+
+The difference is within noise. A paired test on the questions that changed gives p = 0.23. Greedy
+output tokens matched the stock plugin in our offline checks.
 
 ---
+
+## Notes
+
+- **Stock vllm-neuron without the branches.** The DLAMI's own plugin needs
+  `NEURON_SKIP_EFA_AFFINITY=1` (trn2.3xlarge has no EFA, and all four workers die with
+  `No EFA device found ... /infiniband`). It also needs
+  `--hf-overrides '{"quantization_config": {}}'`, or it rejects the checkpoint with
+  `gpt_oss_mxfp4 quantization is currently not supported in neuron`. On Trainium2 it runs BF16 only.
+  The branches remove both requirements.
+- **Two smaller copies were slower than one TP=4 copy.** Running two TP=2 servers on one device
+  (cores 0-1 and 2-3) peaked at 829 / 364 tokens/s (short / long prompts), against 1,014 / 380 for one
+  TP=4 server. Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
+- **Don't go below TP=2.** The weights do not fit on one core. TP=2 works (see the previous note), but
+  one TP=4 server is faster.
+- **FP8 and the KV cache.** With the BF16 prefill copy, FP8 leaves about 470K tokens of KV cache at
+  `max-num-batched-tokens 512`. That is about 57 full-length 8K requests. If you need more, set
+  `GPTOSS_HYBRID_PREFILL=0` to drop the copy. You get 2x the KV cache, but prefill is about 35% slower.
+- **Every change can be switched off** with an environment variable (`GPTOSS_*`). See the top of
+  `vllm_neuron/model/gpt_oss/model_bf16.py` on the branch, and the
+  [GPT-OSS recipe on the branch](https://github.com/jimburtoft/vllm-neuron/blob/gptoss-trn2-perf-0.29/docs/model-recipes/gpt-oss.md).
+- **Greedy output can vary between runs under load.** The scheduler batches requests differently from
+  run to run. Use `--max-num-seqs 1` if you need bit-identical output for comparisons.
+- **The compile cache does not track kernel source.** After you change the NKI Library install, run
+  `rm -rf ~/.cache/neuron_libtorch`, or you keep running the old kernels.
 
 ## Troubleshooting
 
-| Error | Change needed |
+| Symptom | Fix |
 |---|---|
-| `gpt_oss_mxfp4 quantization is currently not supported in neuron` | Change 2 — both `hf_overrides` and `additional_config` |
-| `FileNotFoundError: ... /infiniband` | Change 1 — `NEURON_SKIP_EFA_AFFINITY=1` |
-| `Automatic Prefix Caching (APC) requires segmented prefill` | Change 3 — `max_num_batched_tokens` |
-| `nrt_tensor_allocate status=4` during load | Use `tensor_parallel_size=4` |
+| No speed-up, and the check in step 2 prints `False` for the plugin | Reinstall vllm-neuron with `--no-deps --force-reinstall` |
+| Check prints `False` for the kernels | Reinstall the NKI Library branch, then `rm -rf ~/.cache/neuron_libtorch` |
+| `posix_spawn failed: No such file or directory` at the first compile | `source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate` instead of calling its `python` directly |
+| `gpt_oss_mxfp4 quantization is currently not supported in neuron` | You are on the stock plugin. Install the branch (step 2) |
+| `No EFA device found ... /infiniband` | You are on the stock plugin. Install the branch, or set `NEURON_SKIP_EFA_AFFINITY=1` |
+| `gpu_memory_utilization is reduced from 0.92 to 0.80` warning | Expected with `quantization: "fp8"` |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
-| `device_allocator INTERNAL ASSERT FAILED ... Allocator for neuron` at exit | Cosmetic — happens after generation, exit code is still 0 |
-
----
 
 ## References
 
 - GPT-OSS: <https://huggingface.co/openai/gpt-oss-20b>
-- vllm-neuron: <https://github.com/vllm-project/vllm-neuron>
-- Neuron SDK 2.32 release notes:
-  <https://awsdocs-neuron.readthedocs-hosted.com/en/latest/release-notes/2.32.0.html>
-- Capacity Blocks pricing: <https://aws.amazon.com/ec2/capacityblocks/pricing/>
+- vllm-neuron branch: <https://github.com/jimburtoft/vllm-neuron/tree/gptoss-trn2-perf-0.29>
+- NKI Library branch: <https://github.com/jimburtoft/nki-library/tree/gptoss-trn2-perf-2.33>
+- Upstream vllm-neuron: <https://github.com/vllm-project/vllm-neuron>
+- Neuron SDK 2.33 release notes: <https://awsdocs-neuron.readthedocs-hosted.com/en/latest/release-notes/2.33.0.html>
