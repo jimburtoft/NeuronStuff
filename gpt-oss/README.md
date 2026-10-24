@@ -2,7 +2,8 @@
 
 Tested on Trainium2 with the public **Neuron SDK 2.33 DLAMI**
 (`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`): measured on `trn2.3xlarge`
-2026-10-20, and every command below re-run as written on 2026-10-23.
+2026-10-20, and every command below re-run as written on a fresh `trn2.3xlarge` on 2026-10-24
+(served throughput matched the table within 2%).
 
 The DLAMI's stock vllm-neuron runs GPT-OSS, but slowly and only with extra flags. This guide installs
 two public branches on top of the DLAMI's vLLM environment. They carry the GPT-OSS changes we have
@@ -147,7 +148,7 @@ vllm serve ~/models/gpt-oss-20b \
       "on_device_sampling_config": {"all_greedy": true}}}'
 ```
 
-**The first start compiles for about 20-50 minutes** (21 minutes in our last run). Run it in `tmux` or `screen`. Later starts reuse
+**The first start compiles for about 20-50 minutes** (42 minutes on a fresh trn2.3xlarge in our last run). Run it in `tmux` or `screen`. Later starts reuse
 the compile cache (`~/.cache/neuron_libtorch`). The server is ready when the log shows
 `Application startup complete`.
 
