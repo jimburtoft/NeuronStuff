@@ -200,9 +200,12 @@ the same synthetic prompts.
 With `max-num-batched-tokens 2048`, FP8 time to first token at 2,048 / 4,096 tokens drops to
 132 / 257 ms. Short prompts get a little slower (81 ms at 128 tokens).
 
-These offline runs set `VLLM_NEURON_BACKEND=vllm_neuron` (the XLA compile route). The served runs
-below use the plugin's default route, which is what `vllm serve` above gets. The served numbers match
-the same configurations measured on the XLA route within 1-3%, so you do not need to set it.
+The offline runs above set `VLLM_NEURON_BACKEND=vllm_neuron` (the older XLA compile route). **Do not
+set it.** The plugin's default (native) route, which `vllm serve` above uses, measured the same within
+a few percent with these branches (re-tested 2026-10-23: FP8 decode 5.2 / 17.2 / 20.7 ms at batch
+1 / 8 / 32, time to first token 47 / 54 / 197 ms at 128 / 512 / 2,048 tokens), and its first compile is
+about 2x faster. Also **do not pass `--optimization-level`**: the default `-O2` is the fastest level we
+measured on the native route, and `-O1` makes decode about 15% slower.
 
 ### Served throughput (`vllm serve`, 128 output tokens per request)
 
@@ -246,6 +249,11 @@ output tokens matched the stock plugin in our offline checks.
   `--hf-overrides '{"quantization_config": {}}'`, or it rejects the checkpoint with
   `gpt_oss_mxfp4 quantization is currently not supported in neuron`. On Trainium2 it runs BF16 only.
   The branches remove both requirements.
+- **Stock vllm-neuron is about 3x slower at decode on its default compile route.** On Trainium2 the
+  stock plugin's GPT-OSS decode takes 26.8 ms per step at batch 1 on the default (native) route, against
+  8.5 ms with `VLLM_NEURON_BACKEND=vllm_neuron`, and its first compile takes about 50 minutes. The
+  branches do not have this problem (5.2 ms on the default route). If you must run the stock plugin,
+  set `VLLM_NEURON_BACKEND=vllm_neuron`.
 - **Two smaller copies were slower than one TP=4 copy.** Running two TP=2 servers on one device
   (cores 0-1 and 2-3) peaked at 829 / 364 tokens/s (short / long prompts), against 1,014 / 380 for one
   TP=4 server. Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
@@ -273,6 +281,17 @@ output tokens matched the stock plugin in our offline checks.
 | `No EFA device found ... /infiniband` | You are on the stock plugin. Install the branch, or set `NEURON_SKIP_EFA_AFFINITY=1` |
 | `gpu_memory_utilization is reduced from 0.92 to 0.80` warning | Expected with `quantization: "fp8"` |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
+| Stock plugin: decode ~3x slower than expected, first compile ~50 min | Install the branches, or set `VLLM_NEURON_BACKEND=vllm_neuron` on the stock plugin |
+
+## Trainium3
+
+On Trainium3 GPT-OSS runs the published MXFP4 checkpoint natively. Use the Trainium3 branch
+[`jimburtoft/vllm-neuron@gptoss-trn3-mx-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/gptoss-trn3-mx-0.29)
+instead of the Trainium2 one (no `quantization` setting, no NKI Library branch), with
+`tensor_parallel_size=8`, `max_num_batched_tokens=2048` and
+`"num_batched_tokens_buckets": [128, 256, 512, 1024, 2048]`. See the
+[Trn3 section of the recipe on that branch](https://github.com/jimburtoft/vllm-neuron/blob/gptoss-trn3-mx-0.29/docs/model-recipes/gpt-oss.md#trn3-performance-options).
+Leave `VLLM_NEURON_BACKEND` and `--optimization-level` unset there too.
 
 ## References
 
