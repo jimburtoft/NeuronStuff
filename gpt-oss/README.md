@@ -1,7 +1,8 @@
 # Running GPT-OSS-20B on Trainium2 with vLLM + vllm-neuron (Neuron SDK 2.33)
 
-Tested on a `trn2.3xlarge` with the public **Neuron SDK 2.33 DLAMI**
-(`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`), 2026-10-20.
+Tested on Trainium2 with the public **Neuron SDK 2.33 DLAMI**
+(`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`): measured on `trn2.3xlarge`
+2026-10-20, and every command below re-run as written on 2026-10-23.
 
 The DLAMI's stock vllm-neuron runs GPT-OSS, but slowly and only with extra flags. This guide installs
 two public branches on top of the DLAMI's vLLM environment. They carry the GPT-OSS changes we have
@@ -66,6 +67,9 @@ sudo mkswap --force /swapfile     # --force is REQUIRED on this kernel; without 
 sudo swapon /swapfile
 free -g                            # confirm ~63 GB swap
 ```
+
+On a fresh gp3 volume this takes about 10-15 minutes. `mkswap` waits for the 64 GB file to reach
+disk. It is not hung.
 
 ---
 
@@ -143,7 +147,7 @@ vllm serve ~/models/gpt-oss-20b \
       "on_device_sampling_config": {"all_greedy": true}}}'
 ```
 
-**The first start compiles for about 25-50 minutes.** Run it in `tmux` or `screen`. Later starts reuse
+**The first start compiles for about 20-50 minutes** (21 minutes in our last run). Run it in `tmux` or `screen`. Later starts reuse
 the compile cache (`~/.cache/neuron_libtorch`). The server is ready when the log shows
 `Application startup complete`.
 
@@ -171,7 +175,13 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
   "max_tokens": 256}' | python -m json.tool
 ```
 
-For offline (Python) use, see [`gpt_oss_run.py`](./gpt_oss_run.py). It uses the same settings.
+For offline (Python) use, see [`gpt_oss_run.py`](./gpt_oss_run.py). It uses the same settings, checks
+that both branches are installed, and sends three chat prompts through `llm.chat()`. Use `llm.chat()`
+(or the OpenAI server) for questions. `llm.generate()` on a raw string skips the chat template, so the
+model continues the text instead of answering it.
+
+On a trn2.48xlarge, pin a server to one device with `NEURON_VISIBLE_DEVICES=0-3` (logical cores
+0-3). vllm-neuron rejects `NEURON_RT_VISIBLE_CORES`.
 
 ---
 

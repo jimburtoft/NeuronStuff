@@ -70,7 +70,16 @@ PROMPTS = [
     "What is 17 * 24? Show your reasoning briefly.",
 ]
 
-outputs = llm.generate(PROMPTS, SamplingParams(temperature=0.0, max_tokens=128))
+# llm.chat() applies the model's chat template (as the OpenAI server does). llm.generate() on a raw
+# string would treat it as text to continue, not as a question.
+outputs = llm.chat(
+    [[{"role": "user", "content": p}] for p in PROMPTS],
+    SamplingParams(temperature=0.0, max_tokens=512),
+)
 
-for o in outputs:
-    print(f"\n--- {o.prompt}\n{o.outputs[0].text}")
+# GPT-OSS answers in the "harmony" format: a reasoning ("analysis") part, then the answer after
+# "assistantfinal". The OpenAI server splits these for you; here we print just the answer.
+for p, o in zip(PROMPTS, outputs):
+    text = o.outputs[0].text
+    answer = text.split("assistantfinal", 1)[1] if "assistantfinal" in text else text
+    print(f"\n--- {p}\n{answer.strip()}")
