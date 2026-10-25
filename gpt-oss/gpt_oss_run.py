@@ -51,13 +51,14 @@ llm = LLM(
     max_model_len=8192,
     max_num_seqs=64,
     block_size=128,
-    # 512 is best for prompts up to ~500 tokens; use 2048 if most prompts are longer.
-    max_num_batched_tokens=512,
+    # 2048-token prefill chunks plus smaller prefill buckets (below): fast for short and long prompts.
+    max_num_batched_tokens=2048,
     enable_prefix_caching=False,
     additional_config={"neuron_config": {
         # FP8 expert weights for decode, BF16 copy for prefill. The plugin lowers
         # gpu_memory_utilization to 0.80 for this and logs a warning; that is expected.
         "quantization": "fp8",
+        "num_batched_tokens_buckets": [128, 256, 512, 1024, 2048],
         "decode_context_length_buckets": [1024, 2048, 4096, 7168],
         # Greedy only. Remove this if you need temperature / top-p sampling.
         "on_device_sampling_config": {"all_greedy": True},

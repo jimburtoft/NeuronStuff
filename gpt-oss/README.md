@@ -138,12 +138,13 @@ source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate
 vllm serve ~/models/gpt-oss-20b \
   --tensor-parallel-size 4 \
   --max-model-len 8192 \
-  --max-num-batched-tokens 512 \
+  --max-num-batched-tokens 2048 \
   --max-num-seqs 64 \
   --block-size 128 \
   --no-enable-prefix-caching \
   --additional-config '{"neuron_config": {
       "quantization": "fp8",
+      "num_batched_tokens_buckets": [128, 256, 512, 1024, 2048],
       "decode_context_length_buckets": [1024, 2048, 4096, 7168],
       "on_device_sampling_config": {"all_greedy": true}}}'
 ```
@@ -158,7 +159,7 @@ What the settings do:
 |---|---|
 | `--tensor-parallel-size 4` | Uses all 4 cores of the device. This is the fastest layout we measured. Two TP=2 copies on one device were slower (see [Notes](#notes)). |
 | `"quantization": "fp8"` | Stores the expert weights as FP8 (converted exactly from the MXFP4 checkpoint), so decode reads half as many bytes. A BF16 copy of the experts is kept for prefill. Because of that copy, the plugin lowers `gpu_memory_utilization` from 0.92 to 0.80 and logs a warning. That is expected. |
-| `--max-num-batched-tokens 512` | Best for prompts up to ~500 tokens. **Use `2048` if most prompts are longer** (see [Results](#results)). The value must be one of 512, 1024, 2048, 4096 or 8192. |
+| `--max-num-batched-tokens 2048` + `num_batched_tokens_buckets` | Prompts are processed in chunks of up to 2048 tokens, and the buckets compile smaller prefill graphs so a short prompt does not pay for a 2048-token chunk. One server is then as fast as `512` for short prompts and as fast as `2048` for long ones (see [Results](#results)). Each bucket must be a multiple of 128 and the last must equal `--max-num-batched-tokens`. |
 | `decode_context_length_buckets` | Compiles decode at several context lengths, so short requests do not pay for `max_model_len` on every step. |
 | `"all_greedy": true` | Skips the general sampler. Remove it if you need temperature or top-p sampling. |
 | `--no-enable-prefix-caching` | Our numbers are without prefix caching. It works (it needs a `max-num-batched-tokens` from the list above), but we have not measured it. |
@@ -166,6 +167,11 @@ What the settings do:
 
 `quantization: "bf16"` also works. It is slower at decode (6.0 vs 5.1 ms per step at batch 1) and
 has the same prefill.
+
+**`max_model_len` for long contexts.** If every request (prompt + output) stays under about 6,000 tokens,
+`--max-model-len 6144` with `"decode_context_length_buckets": [1024, 2048, 4096]` decodes about 10 % faster
+at 32 concurrent requests with ~4,000-token contexts than 8192 or 4608. At those two sizes the decode
+attention kernel has to use a smaller KV block. Keep 8192 when you need full-length requests.
 
 Query it:
 
@@ -198,8 +204,9 @@ the same synthetic prompts.
 | Time to first token, 128 / 512 / 2,048 / 4,096 tokens (ms) | 283 / 285 / 1,124 / 2,262 | **51 / 57 / 201 / 412** | 51 / 58 / 202 / 412 |
 | Decode step, batch 1 / 8 / 32 (ms) | 8.5 / 36.5 / 43.8 | **5.1 / 17.8 / 20.7** | 6.0 / 23.5 / 26.3 |
 
-With `max-num-batched-tokens 2048`, FP8 time to first token at 2,048 / 4,096 tokens drops to
-132 / 257 ms. Short prompts get a little slower (81 ms at 128 tokens).
+With `max-num-batched-tokens 2048` and the prefill buckets from the command above, FP8 time to first
+token is 44 / 56 / 130 / 254 ms at 128 / 512 / 2,048 / 4,096 tokens: as fast as 512 for short prompts,
+and 1.6x faster for long ones. Without the buckets, 2048 makes short prompts slower (77 ms at 128 tokens).
 
 The offline runs above set `VLLM_NEURON_BACKEND=vllm_neuron` (the older XLA compile route). **Do not
 set it.** The plugin's default (native) route, which `vllm serve` above uses, measured the same within
@@ -215,16 +222,22 @@ Output tokens/s at 1 / 4 / 16 / 32 / 64 concurrent requests:
 | Configuration | ~400-token prompts | ~4,000-token prompts |
 |---|---|---|
 | stock DLAMI plugin (BF16)\* | 92 / 135 / 196 / 264 / - | 35 / 40 / 42 / 40 / - |
-| **FP8, `max-num-batched-tokens 512`** | **177 / 381 / 634 / 923 / 1,014** | 111 / 172 / 210 / 234 / 237 |
-| **FP8, `max-num-batched-tokens 2048`** | 170 / 349 / 552 / 758 / 779 | **133 / 229 / 301 / 354 / 345** |
+| FP8, `max-num-batched-tokens 512` | 178 / 383 / 640 / 935 / 1,025 | 112 / 173 / 211 / 235 / 239 |
+| FP8, `max-num-batched-tokens 2048` | 171 / 352 / 557 / 768 / 789 | 134 / 230 / 303 / 356 / 348 |
+| **FP8, 2048 + prefill buckets (the command above)** | **177 / 379 / 633 / 922 / 955** | **134 / 230 / 303 / 356 / 347** |
 
 \* 1 to 32 concurrent requests only, with `--max-num-seqs 32`, `max-num-batched-tokens 512`,
 `NEURON_SKIP_EFA_AFFINITY=1` and `--hf-overrides`.
 
-- **Short prompts: use 512.** Peak is about 1,000 output tokens/s at 64 concurrent requests.
-- **Long prompts: use 2048.** It gives 1.3-1.5x the throughput of 512 at 4 or more concurrent requests.
-  A BF16 run with 2048 reached 380 tokens/s at 64 concurrent requests. That is within run-to-run
-  noise of FP8, so we have not seen a real difference between the two for long prompts.
+The rows for 512, 2048 and buckets were measured on 2026-10-24 on one Trainium2 device (4 cores of a
+trn2.48xlarge, SDK 2.33 release container, same branches). Our earlier trn2.3xlarge numbers for 512 and 2048 match
+them within 1-3 %.
+
+- **Use 2048 + buckets as the default.** Short prompts get the speed of 512 (time to first token
+  44 ms at 128 tokens, vs 77 ms with 2048 alone) and long prompts the speed of 2048 (1.3-1.5x the
+  throughput of 512).
+- **The one exception is short prompts at 64 concurrent requests**, where 512 is 7 % faster: 2048 leaves
+  less room for the KV cache (353K vs 468K tokens), so not all 64 requests fit at once.
 - **More than 64 concurrent requests made it slower.** Each decode step got slower faster than the
   batch grew.
 
@@ -260,9 +273,11 @@ output tokens matched the stock plugin in our offline checks.
   TP=4 server. Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
 - **Don't go below TP=2.** The weights do not fit on one core. TP=2 works (see the previous note), but
   one TP=4 server is faster.
-- **FP8 and the KV cache.** With the BF16 prefill copy, FP8 leaves about 470K tokens of KV cache at
-  `max-num-batched-tokens 512`. That is about 57 full-length 8K requests. If you need more, set
-  `GPTOSS_HYBRID_PREFILL=0` to drop the copy. You get 2x the KV cache, but prefill is about 35% slower.
+- **FP8 and the KV cache.** With the BF16 prefill copy, FP8 leaves about 350K tokens of KV cache with the
+  command above (470K at `max-num-batched-tokens 512`), about 43 full-length 8K requests. If you need more, set
+  `GPTOSS_HYBRID_PREFILL=0` to drop the copy: 2.1x the KV cache, but prefill is about 35 % slower with the
+  NKI Library branch as published. A kernel fix that brings this to about 5 % is being tested (not in the
+  branch yet).
 - **Every change can be switched off** with an environment variable (`GPTOSS_*`). See the top of
   `vllm_neuron/model/gpt_oss/model_bf16.py` on the branch, and the
   [GPT-OSS recipe on the branch](https://github.com/jimburtoft/vllm-neuron/blob/gptoss-trn2-perf-0.29/docs/model-recipes/gpt-oss.md).
