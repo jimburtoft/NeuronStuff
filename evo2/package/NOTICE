@@ -1,0 +1,11 @@
+evo2-neuron-decode
+Evo 2 (StripedHyena 2) autoregressive decode on AWS Trainium 2 with PyTorch Native (TorchNeuron).
+
+This package is distributed under the Apache License, Version 2.0 (LICENSE).
+
+It contains no third-party source code. At runtime it patches methods of the upstream model
+definition, which is NOT included and must be obtained separately:
+  Zymrael/vortex (https://github.com/Zymrael/vortex), Apache License 2.0
+  ArcInstitute/evo2 configs (https://github.com/ArcInstitute/evo2), Apache License 2.0
+It calls the AWS Neuron NKI Library (nkilib, Apache License 2.0), shipped with the Neuron SDK.
+Model weights (arcinstitute/evo2_7b_base on Hugging Face) are downloaded separately under their own license.

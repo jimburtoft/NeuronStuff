@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evo2-neuron-decode"
+version = "0.1.0"
+description = "Autoregressive decode for Evo 2 / StripedHyena 2 on AWS Trainium (PyTorch Native)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# Deliberately NO install_requires for torch / torch-neuronx / nki / nkilib.
+# Those come from the AWS PyTorch Native container and pip must not try to resolve
+# or upgrade them -- doing so breaks the container's pinned stack. See README.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7", "numpy>=1.24"]
+
+[tool.setuptools.packages.find]
+include = ["evo2_neuron_decode*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "simulator: runs on CPU via nki.simulate, no Trainium required",
+  "hardware: requires a Trainium device",
+  "container: needs torch_neuronx (the AWS PyTorch Native container) but NOT a device",
+  "slow: loads the 13 GB checkpoint (minutes, not seconds)",
+]

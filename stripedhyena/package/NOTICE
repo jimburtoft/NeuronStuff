@@ -1,0 +1,22 @@
+striped-hyena-neuron
+StripedHyena 7B (StripedHyena 1) inference on AWS Trainium 2 with PyTorch Native (TorchNeuron).
+
+This package is distributed under the Apache License, Version 2.0 (LICENSE).
+
+It includes, unmodified, files from:
+  togethercomputer/stripedhyena (https://github.com/togethercomputer/stripedhyena)
+  commit 7e13f618027fea9625be1f2d2d94f9a361f6bd02, Apache License 2.0, Copyright Together Computer:
+    striped_hyena_neuron/_vendor/stripedhyena/*.py
+    striped_hyena_neuron/_vendor/stripedhyena_configs/7b-sh-32k-v1.yml
+    striped_hyena_neuron/_vendor/tokenizer.json
+  (license text: striped_hyena_neuron/_vendor/LICENSE.stripedhyena)
+
+It includes a modified copy of one function from the AWS Neuron NKI Library (nkilib, Apache License 2.0):
+    striped_hyena_neuron/kernels/nkilib_mlp_compat.py  (_perform_intermediate_transpose; used only with the
+    earlier NKI 0.7 frontend (torch-neuronx 2.13); a no-op on NKI 0.7.0 GA / Neuron SDK 2.33)
+
+Files adapted from the Evo 2 Trainium decode package (evo2_neuron_decode, Apache License 2.0) carry a header naming
+their source file; see PROVENANCE.md.
+
+Model weights are NOT included: togethercomputer/StripedHyena-Hessian-7B and togethercomputer/StripedHyena-Nous-7B
+(Apache License 2.0) are downloaded from the Hugging Face Hub.

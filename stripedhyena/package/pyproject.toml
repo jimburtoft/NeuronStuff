@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "striped-hyena-neuron"
+version = "0.1.0"
+description = "StripedHyena 7B (StripedHyena 1) inference on AWS Trainium 2 (PyTorch Native)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# Deliberately NO torch / torch-neuronx / nki / nkilib requirements: they come from the AWS PyTorch
+# Native environment (SDK 2.33 DLAMI venv) and pip must not resolve or upgrade them. Install with --no-deps.
+dependencies = []
+
+[project.optional-dependencies]
+cpu = ["torch", "pyyaml", "einops", "safetensors", "tokenizers"]
+test = ["pytest>=7", "numpy>=1.24"]
+
+[tool.setuptools.packages.find]
+include = ["striped_hyena_neuron*"]
+
+[tool.setuptools.package-data]
+striped_hyena_neuron = ["_vendor/*.json", "_vendor/LICENSE.*", "_vendor/stripedhyena_configs/*.yml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "cpu: pure-CPU parity tests (tiny random model), no Trainium needed",
+  "simulator: NKI kernel parity via nki.simulate on CPU, no Trainium needed",
+  "hardware: requires a Trainium device and PyTorch Native (torch-neuronx)",
+  "weights: also needs the 15 GB checkpoint (SHN_WEIGHTS, default /weights/hessian-7b)",
+]
