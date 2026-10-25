@@ -46,9 +46,9 @@ sudo mkswap --force /swapfile && sudo swapon /swapfile
 ```bash
 source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate   # vllm 0.29.0, vllm-neuron 0.29.0.1.2.0
 
-# vllm-neuron with Voxtral (PR #69, pinned commit), in a side directory. --no-deps leaves the venv as shipped.
+# vllm-neuron with Voxtral (PR #69, pinned commit, includes the batched DFlash mask fix), in a side directory. --no-deps leaves the venv as shipped.
 git clone https://github.com/jimburtoft/vllm-neuron.git -b voxtral-dflash ~/vllm-neuron-voxtral
-git -C ~/vllm-neuron-voxtral checkout 75f45e4
+git -C ~/vllm-neuron-voxtral checkout 66ed48f
 pip install --target ~/vn_voxtral --no-deps ~/vllm-neuron-voxtral
 
 # vLLM's "audio" extra is not in the DLAMI venv. Without it every transcription request returns HTTP 400
@@ -95,9 +95,11 @@ Settings:
 - For long audio (up to 5 minutes): `--max-model-len 8192 --max-num-batched-tokens 8192`,
   `"num_batched_tokens_buckets": [512, 8192]`, `"num_encoder_input_buckets": [1, 4, 10]`, and
   `export VLLM_NEURON_RESERVED_HEADROOM_GIB=8` before `vllm serve`.
-- Only `--max-num-seqs 1` (one request at a time) is shown here. For batched serving see the
-  Voxtral recipe in the PR (`docs/model-recipes/voxtral.md`): `decode_context_length_buckets` and
-  `encoder_cache_num_blocks`.
+- Batched serving (several requests in flight): use `--max-num-seqs 16` and add
+  `"decode_context_length_buckets": [512]` to `neuron_config` and `"encoder_cache_num_blocks": 34`
+  (2 x max-num-seqs + 2) to `encoder_neuron_config`. Use commit `66ed48f` or later: with earlier
+  commits the draft's acceptance drops by about a third when 2-8 requests are in flight. See the
+  Voxtral recipe in the PR (`docs/model-recipes/voxtral.md`) for the measured throughput.
 
 ## 5. Transcribe
 
