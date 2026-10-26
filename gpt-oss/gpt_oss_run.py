@@ -37,9 +37,15 @@ if not hasattr(_platform.NeuronPlatform, "_cap_memory_for_gpt_oss_fp8"):
         "The stock vllm-neuron plugin is installed, not the GPT-OSS branch. Install it with:\n"
         '  pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/vllm-neuron.git@gptoss-trn2-perf-0.29"'
     )
-if not getattr(_kernels, "SUPPORTS_GATE_UP_MAJOR", False):
+from nkilib.core.moe.moe_cte import bwmm_shard_on_I as _prefill_kernel
+
+if not (
+    getattr(_kernels, "SUPPORTS_GATE_UP_MAJOR", False)
+    and getattr(_prefill_kernel, "SUPPORTS_GATE_UP_MAJOR", False)
+):
     print(
-        "WARNING: stock NKI Library kernels. It runs, but more slowly. For the patched kernels:\n"
+        "WARNING: stock or older NKI Library kernels. It runs, but more slowly and with a BF16 prefill copy\n"
+        "(half the KV cache). For the current kernels:\n"
         '  pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/nki-library.git@gptoss-trn2-perf-2.33"\n'
         "  rm -rf ~/.cache/neuron_libtorch",
         file=sys.stderr,
@@ -55,8 +61,9 @@ llm = LLM(
     max_num_batched_tokens=2048,
     enable_prefix_caching=False,
     additional_config={"neuron_config": {
-        # FP8 expert weights for decode, BF16 copy for prefill. The plugin lowers
-        # gpu_memory_utilization to 0.80 for this and logs a warning; that is expected.
+        # FP8 expert weights. With the NKI Library branch, prefill also runs from them (no BF16
+        # copy), so the KV cache gets the full memory budget. Add "gpt_oss_fp8_prefill": "bf16_copy"
+        # to keep a BF16 prefill copy instead (half the KV cache).
         "quantization": "fp8",
         "num_batched_tokens_buckets": [128, 256, 512, 1024, 2048],
         "decode_context_length_buckets": [1024, 2048, 4096, 7168],

@@ -90,7 +90,8 @@ Check that both took effect:
 python -c "
 from nkilib.core.moe.moe_tkg import selective_expert_impl as m
 import vllm_neuron.vllm.platform as p
-print('patched kernels:', getattr(m, 'SUPPORTS_GATE_UP_MAJOR', False))
+from nkilib.core.moe.moe_cte import bwmm_shard_on_I as c
+print('patched kernels:', getattr(m, 'SUPPORTS_GATE_UP_MAJOR', False) and getattr(c, 'SUPPORTS_GATE_UP_MAJOR', False))
 print('patched plugin: ', hasattr(p.NeuronPlatform, '_cap_memory_for_gpt_oss_fp8'))"
 # patched kernels: True
 # patched plugin:  True
@@ -158,7 +159,7 @@ What the settings do:
 | Setting | Why |
 |---|---|
 | `--tensor-parallel-size 4` | Uses all 4 cores of the device. This is the fastest layout we measured. Two TP=2 copies on one device were slower (see [Notes](#notes)). |
-| `"quantization": "fp8"` | Stores the expert weights as FP8 (converted exactly from the MXFP4 checkpoint), so decode reads half as many bytes. A BF16 copy of the experts is kept for prefill. Because of that copy, the plugin lowers `gpu_memory_utilization` from 0.92 to 0.80 and logs a warning. That is expected. |
+| `"quantization": "fp8"` | Stores the expert weights as FP8 (converted exactly from the MXFP4 checkpoint), so decode reads half as many bytes. With the NKI Library branch, prefill also runs from the FP8 weights, so the full memory budget goes to the KV cache (about 756K tokens). The log line `GPT-OSS FP8 prefill: FP8 experts (no BF16 copy)` confirms it. |
 | `--max-num-batched-tokens 2048` + `num_batched_tokens_buckets` | Prompts are processed in chunks of up to 2048 tokens, and the buckets compile smaller prefill graphs so a short prompt does not pay for a 2048-token chunk. One server is then as fast as `512` for short prompts and as fast as `2048` for long ones (see [Results](#results)). Each bucket must be a multiple of 128 and the last must equal `--max-num-batched-tokens`. |
 | `decode_context_length_buckets` | Compiles decode at several context lengths, so short requests do not pay for `max_model_len` on every step. |
 | `"all_greedy": true` | Skips the general sampler. Remove it if you need temperature or top-p sampling. |
@@ -238,8 +239,9 @@ them within 1-3 %.
 - **Use 2048 + buckets as the default.** Short prompts get the speed of 512 (time to first token
   44 ms at 128 tokens, vs 77 ms with 2048 alone) and long prompts the speed of 2048 (1.3-1.5x the
   throughput of 512).
-- **The one exception is short prompts at 64 concurrent requests**, where 512 is 7 % faster: 2048 leaves
-  less room for the KV cache (353K vs 468K tokens), so not all 64 requests fit at once.
+- These three rows were measured with the BF16 prefill copy (see the next note), where 2048 leaves less KV cache
+  than 512 (353K vs 468K tokens); short prompts at 64 concurrent requests were then 7 % faster with 512. Without
+  the copy (now the default) both have room for all 64 requests.
 - **More than 64 concurrent requests made it slower.** Each decode step got slower faster than the
   batch grew.
 
@@ -275,20 +277,22 @@ output tokens matched the stock plugin in our offline checks.
   TP=4 server. Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
 - **Don't go below TP=2.** The weights do not fit on one core. TP=2 works (see the previous note), but
   one TP=4 server is faster.
-- **FP8 and the KV cache.** With the BF16 prefill copy, FP8 leaves about 350K tokens of KV cache with the
-  command above (470K at `max-num-batched-tokens 512`), about 43 full-length 8K requests. Set
-  `GPTOSS_HYBRID_PREFILL=0` to drop the copy: 2.1x the KV cache (756K tokens) at the same prefill and decode
-  speed (time to first token 127.5 vs 129.0 ms at 2,048 tokens; decode 5.20 vs 5.20 ms at batch 1, 20.6 vs
-  20.7 ms at batch 32). Served throughput (output tok/s, same command, 2026-10-26):
+- **FP8 prefill and the KV cache.** By default (`"gpt_oss_fp8_prefill": "auto"` in `neuron_config`) prefill runs
+  from the FP8 expert weights when the installed NKI Library supports it, as the branch does: KV cache 756K tokens
+  with the command above, about 92 full-length 8K requests. With the DLAMI's own NKI Library, `"auto"` keeps a
+  BF16 copy of the experts for prefill instead, halves the KV cache, and lowers `gpu_memory_utilization` to 0.80
+  with a warning. To keep the copy anyway, add `"gpt_oss_fp8_prefill": "bf16_copy"`. Same prefill and decode
+  speed either way (time to first token 127.5 vs 129.0 ms at 2,048 tokens; decode 5.20 vs 5.20 ms at batch 1,
+  20.6 vs 20.7 ms at batch 32). Served throughput (output tok/s, same command, 2026-10-26):
 
   | | c1 / 4 / 16 / 32 / 64, ~400-token prompts | ~4,000-token prompts |
   |---|---|---|
-  | with the copy (default) | 177 / 378 / 627 / 911 / 945 | 135 / 231 / 304 / 358 / 349 |
-  | `GPTOSS_HYBRID_PREFILL=0` | 176 / 372 / 613 / 888 / **1,118** | 134 / 228 / 298 / 352 / **384** |
+  | **default (no copy)** | 176 / 372 / 613 / 888 / **1,118** | 134 / 228 / 298 / 352 / **384** |
+  | `"gpt_oss_fp8_prefill": "bf16_copy"` | 177 / 378 / 627 / 911 / 945 | 135 / 231 / 304 / 358 / 349 |
 
-  Without the copy, 1-3 % lower at 4-32 concurrent requests (time to first token under load is a little higher)
-  and 10-18 % higher at 64. Use `GPTOSS_HYBRID_PREFILL=0` for about 64 concurrent requests or when you need
-  the KV cache. GSM8K-CoT (250 questions): 0.880-0.892 in all four runs (with and without the copy).
+  The copy is 1-3 % faster at 4-32 concurrent requests (time to first token under load is a little lower);
+  without it, 10-18 % faster at 64 and 2.1x the KV cache. GSM8K-CoT (250 questions): 0.880-0.892 in all four
+  runs (with and without the copy).
 - **Every change can be switched off** with an environment variable (`GPTOSS_*`). See the top of
   `vllm_neuron/model/gpt_oss/model_bf16.py` on the branch, and the
   [GPT-OSS recipe on the branch](https://github.com/jimburtoft/vllm-neuron/blob/gptoss-trn2-perf-0.29/docs/model-recipes/gpt-oss.md).
@@ -306,7 +310,7 @@ output tokens matched the stock plugin in our offline checks.
 | `posix_spawn failed: No such file or directory` at the first compile | `source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate` instead of calling its `python` directly |
 | `gpt_oss_mxfp4 quantization is currently not supported in neuron` | You are on the stock plugin. Install the branch (step 2) |
 | `No EFA device found ... /infiniband` | You are on the stock plugin. Install the branch, or set `NEURON_SKIP_EFA_AFFINITY=1` |
-| `gpu_memory_utilization is reduced from 0.92 to 0.80` warning | Expected with `quantization: "fp8"` |
+| `gpu_memory_utilization is reduced from 0.92 to 0.80` warning | The BF16 prefill copy is in use: the NKI Library branch is not installed (check step 2), or you set `"gpt_oss_fp8_prefill": "bf16_copy"` |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
 | Stock plugin: decode ~3x slower than expected, first compile ~50 min | Install the branches, or set `VLLM_NEURON_BACKEND=vllm_neuron` on the stock plugin |
 
