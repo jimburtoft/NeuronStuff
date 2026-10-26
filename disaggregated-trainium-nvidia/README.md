@@ -9,13 +9,114 @@ It works in both directions:
 - **mixed prefill pools**, for example {trn2, GPU} prefill -> GPU decode
 
 **Software:**
-- trn2 side: vllm-neuron 0.24.0.1.1.0 (Neuron SDK 2.32).
-- GPU side: upstream vLLM 0.24.0.
-- One small vLLM patch, applied on the side that runs decode.
+- Current: vllm-neuron 0.29.0.1.2.0 (Neuron SDK 2.33) on trn2, upstream vLLM 0.29.0 on the GPU, nixl 1.3.2 on both, plus three small patches (see below).
+- Reference: vllm-neuron 0.24.0.1.1.0 (SDK 2.32) with vLLM 0.24.0 and one patch.
 
 Tested on trn2.48xlarge <-> p6-b200.48xlarge, both in one Availability Zone.
 
-## Results
+## vLLM 0.29 / vllm-neuron 0.29 (Neuron SDK 2.33)
+
+This is the current stack. The 0.24 recipe further down is kept for reference.
+
+**What changed in vLLM 0.28+.** vLLM now packs K and V into each token's content dimension (vllm-project/vllm#51718), so the 0.24 patch no longer applies. Instead, the GPU side stores K and V as separate head slots, which makes each GPU KV page byte-identical to vllm-neuron's per-layer K and V slabs. KV then moves zero-copy in both directions, including with heterogeneous TP.
+
+**Infrastructure** is the same as for 0.24 (see "0.24: Recipe", section 1), but the trn2 host uses the **Neuron SDK 2.33 DLAMI**. Its vLLM venv is `/opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0`.
+
+**What was tested.** The results below were measured with vllm-neuron 0.29.0.1.2.0 from SDK 2.33 running in a container, with the same flags and environment as `v029/scripts/serve_trn2.sh`. That script targets the DLAMI venv and has not been run end to end in that venv. The `neuron_nixl_connector.py` in the public 0.29.0.1.2.0 wheel is identical to the tested one, and the trn2 patch applies to the wheel cleanly.
+
+### Patches (`v029/patches/`)
+
+| Patch | Apply to | What it does | Upstream |
+|---|---|---|---|
+| `patch_gpu_vllm029_split_kv_slots.py` | GPU `vllm` 0.29.0 | Opt-in (`VLLM_FLASHINFER_SPLIT_KV_SLOTS=1`) BF16 FlashInfer KV cache with separate K/V head slots, registered as two NIXL regions per layer | vllm-project/vllm#62107 |
+| `patch_gpu_vllm029_gqa_replicated_pull.py` | GPU `vllm` 0.29.0 | Allows prefill TP > KV-head count > decode TP, e.g. Llama-3.3-70B (8 KV heads) trn2 TP16 → GPU TP4 | vllm-project/vllm#63648 |
+| `patch_neuron_029_remote_strides.py` | trn2 `vllm_neuron` 0.29.0.1.2.0 | Uses the remote's advertised `block_strides` when building remote descriptors, so a strided GPU K/V half-page maps correctly | – |
+
+```bash
+# GPU host
+python3 -m venv ~/venv && . ~/venv/bin/activate && pip install vllm==0.29.0 "nixl[cu13]==1.3.2"
+SP=~/venv/lib/python3.12/site-packages
+python v029/patches/patch_gpu_vllm029_split_kv_slots.py $SP/vllm
+python v029/patches/patch_gpu_vllm029_gqa_replicated_pull.py $SP/vllm
+
+# trn2 host (SDK 2.33 DLAMI vLLM venv; copy the venv first if you prefer not to modify /opt)
+. /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate
+python v029/patches/patch_neuron_029_remote_strides.py $(python -c "import vllm_neuron,os;print(os.path.dirname(vllm_neuron.__file__))")
+```
+
+All three patches are idempotent.
+
+### Serve (`v029/scripts/`)
+
+Both scripts take `ROLE=producer|consumer|none MODEL PORT SIDE TP MML BS`, plus `CORES` on trn2 or `GPU` on the GPU host.
+
+| Side | Required setting |
+|---|---|
+| both | `NixlConnector`, `kv_buffer_device: "cuda"`, `backends: ["LIBFABRIC"]`, `enforce_handshake_compat: false` |
+| both | **`FI_EFA_ENABLE_SHM_TRANSFER=0`**. Without it, libfabric routes same-host traffic through its shm path, which caps the descriptor rate. |
+| both | the same `--block-size`. **Use 128 when prefill TP > decode TP** (see below). |
+| GPU | `VLLM_FLASHINFER_SPLIT_KV_SLOTS=1`, `VLLM_KV_CACHE_LAYOUT=LBHNC`, `--attention-backend FLASHINFER` |
+| trn2 prefill | `--max-num-seqs` >= 2, with the last `num_seqs_buckets` entry equal to it. With 1, the producer runs out of request slots while finished prefills wait for their KV to be pulled. |
+| trn2 70B TP8 | `--gpu-memory-utilization 0.80`, or set `VLLM_NEURON_RESERVED_HEADROOM_GIB`. The default 0.92 leaves no room for DMA rings. |
+
+Example: 70B, trn2 TP8 prefill → GPU TP2 decode at block 128.
+
+```bash
+# trn2 (one server per 2 Neuron devices; repeat with CORES=8-15 PORT=8101 SIDE=5560, ...)
+ROLE=producer MODEL=~/models/Llama-3.3-70B-Instruct TP=8 CORES=0-7 PORT=8100 SIDE=5559 BS=128 GMU=0.80 \
+  NC='{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[1,4],"on_device_sampling_config":{"all_greedy":true}}' \
+  v029/scripts/serve_trn2.sh
+# GPU
+ROLE=consumer MODEL=~/models/Llama-3.3-70B-Instruct TP=2 GPU=0,1 PORT=8200 SIDE=5659 BS=128 v029/scripts/serve_gpu.sh
+# proxy: private IPs; list several prefillers to pool them
+python scripts/toy_proxy_server.py --port 8000 --prefiller-hosts <trn2 IP> --prefiller-ports 8100 \
+  --decoder-hosts <GPU IP> --decoder-ports 8200
+```
+
+### Block size for prefill TP > decode TP
+
+**Why it matters.** When the prefill side has more TP ranks than the decode side, each decode rank pulls a head slice of every KV block from several prefill ranks. Each NIXL descriptor is therefore `block_size × heads_per_prefill_rank × head_dim × 2 bytes`, which at block 32 is only 4-16 KB. EFA descriptor rate, not bandwidth, then sets the transfer time. Block 128 makes every descriptor 4× larger and cuts their number by 4×.
+
+Measured at 8K input / 128 output tokens, greedy:
+
+| Prefill → decode | Block 32: KV transfer per request | Block 128: KV transfer per request | Throughput gain |
+|---|---|---|---|
+| Llama-3.1-8B, GPU TP4 → GPU TP1 (same host) | 4.6 s | 25 ms | 5.7× |
+| Llama-3.3-70B, trn2 TP8 → GPU TP2 | 1064 ms | 50 ms | 1.5× |
+
+The trn2 prefill server must be compiled at the same `--block-size`.
+
+### Results on 0.29
+
+**Correctness** (Llama-3.1-8B, BF16, greedy, 21 prompts × 48 tokens, vs a single instance on the decode device):
+
+| Configuration | Exact | Ceiling (trn2-only vs GPU-only) |
+|---|---|---|
+| trn2 TP4 prefill → GPU TP4 decode | 17 / 21 | 18 / 21 |
+| GPU TP1 prefill → trn2 TP4 decode | 18 / 21 | 18 / 21 |
+| GPU split-slot vs GPU default layout (same device) | 21 / 21 | – |
+
+**Llama-3.3-70B-Instruct** (vs a single GPU instance at the decode TP):
+
+| Configuration | Exact |
+|---|---|
+| trn2 TP16 prefill → GPU TP4 decode (needs `patch_gpu_vllm029_gqa_replicated_pull.py`) | 18 / 21 |
+| trn2 TP8 prefill → GPU TP4 decode, block 128 | 20 / 21 |
+| trn2 TP8 prefill → GPU TP2 decode, block 128 | 20 / 21 |
+
+Per-token decode latency equals the decode device's own.
+
+### Known issues on 0.29
+
+1. The first request to a vllm-neuron `kv_producer` can fail with a `fail_on_recompile` error. Restart the server.
+2. Llama-3.1-8B decode at TP=1 on trn2 fails to compile. Use TP >= 2 for trn2 decode.
+3. vLLM 0.29 and vllm-neuron 0.29 must use the same `nixl` version on both sides.
+
+## vLLM 0.24 / vllm-neuron 0.24 (Neuron SDK 2.32, reference)
+
+Everything below applies to the 0.24 stack only.
+
+### 0.24: Results
 
 **Raw NIXL transfer** (`nixl_xfer/xvendor_xfer.py`): one Neuron core's HBM <-> one B200, single EFA rail (200 Gb/s).
 - Neuron HBM registers as `FI_HMEM_NEURON`; CUDA HBM registers as `FI_HMEM_CUDA`.
@@ -44,9 +145,9 @@ Tested on trn2.48xlarge <-> p6-b200.48xlarge, both in one Availability Zone.
 - Per-token decode latency equals the decode device's own, and TTFT equals the prefill device's own plus the handoff.
 - KV transfers took 1-3 ms for up to ~20 MB per request.
 
-## Recipe
+### 0.24: Recipe
 
-### 1. Infrastructure
+#### 1. Infrastructure
 
 - **Placement:** both instances in the **same AZ and VPC**. EFA traffic cannot cross AZs or VPCs. Compare AZ **IDs**, not names. Not every region offers trn2 and an EFA GPU type in the same AZ.
 - **Security group:** one rule allowing all traffic to and from the group itself, for both **inbound and outbound**, plus SSH.
@@ -55,7 +156,7 @@ Tested on trn2.48xlarge <-> p6-b200.48xlarge, both in one Availability Zone.
 - **Network JSON:** `infra/make_efa_nics.py` writes the `--network-interfaces` JSON. A multi-NIC launch gets no public IP automatically, so attach an Elastic IP to card 0.
 - **trn2 AMI:** the Neuron DLAMI 20260818 (SDK 2.32). If it is not published in your region and `copy-image` is denied, run `infra/ami_builder_userdata.sh` to rebuild an owned copy, then copy that.
 
-### 2. Software
+#### 2. Software
 
 - **trn2:** use the DLAMI venv `/opt/aws_neuronx_venv_pytorch_inference_vllm_0_24_0_1_1_0` as-is. It already ships vllm 0.24.0, vllm-neuron 0.24.0.1.1.0, nixl 1.3.2 and a `libcuda.so.1` stub.
 - **GPU:** run `python3 -m venv ~/venv && . ~/venv/bin/activate && pip install vllm==0.24.0 "nixl[cu13]==1.3.2"`. Keep the NIXL version the same on both sides.
@@ -66,7 +167,7 @@ python patches/patch_nixl_cross_backend_kv_regions.py \
   <venv>/lib/python3.12/site-packages/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
 ```
 
-### 3. Serve
+#### 3. Serve
 
 `scripts/serve_trn2.sh` and `scripts/serve_gpu.sh` take environment variables: `ROLE=producer|consumer|none`, `MODEL`, `PORT`, `SIDE` (NIXL side-channel port), `TP`, `CORES` (trn2) / `GPU`, and `MML` (max model length).
 
@@ -100,7 +201,7 @@ python toy_proxy_server.py --port 8000 \
 - **Mixed prefill pool:** see `scripts/proxy_xpyd.sh`.
 - **Proxy hosts:** always pass private IPs, never `127.0.0.1`. The decoder dials the prefiller's host for the NIXL side channel.
 
-## Why the patch is needed
+### 0.24: Why the patch is needed
 
 **Different KV registration.** The two backends register the KV cache with NIXL differently:
 - vllm-neuron's KV cache per layer is `(2, num_blocks, H, B, D)`. vLLM registers it as **two regions per layer**, one for K and one for V.
@@ -118,7 +219,7 @@ The consumer then builds remote descriptors in the same order as its local ones.
 
 **Upstream status.** vLLM's KV-cache layout was rewritten after 0.24 (vllm-project/vllm#51718, v0.28+). The patch targets the 0.24 code that vllm-neuron 0.24 pins, so revisit this once vllm-neuron moves to a newer vLLM.
 
-## Known issues
+### 0.24: Known issues
 
 1. **First request on a prefill server.** A vllm-neuron `kv_producer` server can fail its first request with `Detected recompile when torch.compile stance is 'fail_on_recompile'` (`input_ids` size 2048 vs 4). Restart the server.
 2. **8B decode at TP=1 on trn2.** It fails to compile with `NCC_INKI016 Stack out of memory` in the nkilib MLP kernel. Use TP >= 2 for 8B decode on trn2; prefill at TP=1 works.
@@ -136,5 +237,7 @@ The consumer then builds remote descriptors in the same order as its local ones.
 | `scripts/toy_proxy_server.py` | P/D proxy from vllm-neuron's examples (Apache-2.0, vLLM project) |
 | `scripts/compare.py` | greedy token-match harness across endpoints |
 | `patches/patch_nixl_cross_backend_kv_regions.py` | the vLLM 0.24 NixlConnector patch |
+| `v029/patches/` | the three 0.29 patches (GPU split K/V slots, GPU GQA-replicated pull, trn2 remote strides) |
+| `v029/scripts/serve_trn2.sh`, `v029/scripts/serve_gpu.sh` | 0.29 server launchers |
 | `nixl_xfer/xvendor_xfer.py` | standalone NIXL Neuron <-> CUDA transfer test and bandwidth measurement |
 | `infra/make_efa_nics.py`, `infra/ami_builder_userdata.sh` | EFA launch JSON and DLAMI re-capture helper |
