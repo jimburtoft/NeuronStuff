@@ -202,7 +202,9 @@ the same synthetic prompts.
 | | stock DLAMI plugin (BF16) | **these branches, FP8** | these branches, BF16 |
 |---|---:|---:|---:|
 | Time to first token, 128 / 512 / 2,048 / 4,096 tokens (ms) | 283 / 285 / 1,124 / 2,262 | **51 / 57 / 201 / 412** | 51 / 58 / 202 / 412 |
-| Decode step, batch 1 / 8 / 32 (ms) | 8.5 / 36.5 / 43.8 | **5.1 / 17.8 / 20.7** | 6.0 / 23.5 / 26.3 |
+| Decode step, batch 1 / 8 / 32 (ms) | 8.5 / 36.5 / 43.8 | **5.1 / 13.4 / 20.7**\* | 6.0 / 23.5 / 26.3 |
+
+\* Batch 8 measured 2026-10-26, after the branch switched batch 8 to the selective-expert decode kernel (17.8 ms before).
 
 With `max-num-batched-tokens 2048` and the prefill buckets from the command above, FP8 time to first
 token is 44 / 56 / 130 / 254 ms at 128 / 512 / 2,048 / 4,096 tokens: as fast as 512 for short prompts,
@@ -275,18 +277,18 @@ output tokens matched the stock plugin in our offline checks.
   one TP=4 server is faster.
 - **FP8 and the KV cache.** With the BF16 prefill copy, FP8 leaves about 350K tokens of KV cache with the
   command above (470K at `max-num-batched-tokens 512`), about 43 full-length 8K requests. Set
-  `GPTOSS_HYBRID_PREFILL=0` to drop the copy: 2.1x the KV cache (756K tokens) and the same prefill speed
-  (time to first token 128 / 250 ms at 2,048 / 4,096 tokens, vs 130 / 253 ms with the copy). Decode is
-  1-2 % slower without the copy, because the copy also lets decode use a faster weight layout. Served
-  throughput without the copy (output tok/s, same command, 2026-10-25):
+  `GPTOSS_HYBRID_PREFILL=0` to drop the copy: 2.1x the KV cache (756K tokens) at the same prefill and decode
+  speed (time to first token 127.5 vs 129.0 ms at 2,048 tokens; decode 5.20 vs 5.20 ms at batch 1, 20.6 vs
+  20.7 ms at batch 32). Served throughput (output tok/s, same command, 2026-10-26):
 
   | | c1 / 4 / 16 / 32 / 64, ~400-token prompts | ~4,000-token prompts |
   |---|---|---|
-  | with the copy (default) | 177 / 376 / 626 / 909 / 942 | 134 / 230 / 304 / 357 / 348 |
-  | `GPTOSS_HYBRID_PREFILL=0` | 174 / 353 / 598 / 854 / **1,100** | 132 / 224 / 296 / 348 / **381** |
+  | with the copy (default) | 177 / 378 / 627 / 911 / 945 | 135 / 231 / 304 / 358 / 349 |
+  | `GPTOSS_HYBRID_PREFILL=0` | 176 / 372 / 613 / 888 / **1,118** | 134 / 228 / 298 / 352 / **384** |
 
-  Use `GPTOSS_HYBRID_PREFILL=0` if you run at about 64 concurrent requests or need more KV cache; keep the
-  default otherwise. GSM8K-CoT (250 questions): 0.872 with the copy, 0.868 without.
+  Without the copy, 1-3 % lower at 4-32 concurrent requests (time to first token under load is a little higher)
+  and 10-18 % higher at 64. Use `GPTOSS_HYBRID_PREFILL=0` for about 64 concurrent requests or when you need
+  the KV cache. GSM8K-CoT (250 questions): 0.880-0.892 in all four runs (with and without the copy).
 - **Every change can be switched off** with an environment variable (`GPTOSS_*`). See the top of
   `vllm_neuron/model/gpt_oss/model_bf16.py` on the branch, and the
   [GPT-OSS recipe on the branch](https://github.com/jimburtoft/vllm-neuron/blob/gptoss-trn2-perf-0.29/docs/model-recipes/gpt-oss.md).
