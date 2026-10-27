@@ -37,15 +37,20 @@ if not hasattr(_platform.NeuronPlatform, "_cap_memory_for_gpt_oss_fp8"):
         "The stock vllm-neuron plugin is installed, not the GPT-OSS branch. Install it with:\n"
         '  pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/vllm-neuron.git@gptoss-trn2-perf-0.29"'
     )
+import inspect
+
 from nkilib.core.moe.moe_cte import bwmm_shard_on_I as _prefill_kernel
+from nkilib.core.moe.moe_tkg import mlp_tkg_down_projection_lhs_rhs_swap as _down_proj
 
 if not (
     getattr(_kernels, "SUPPORTS_GATE_UP_MAJOR", False)
     and getattr(_prefill_kernel, "SUPPORTS_GATE_UP_MAJOR", False)
+    and "psum_tiles.start_offset" in inspect.getsource(_down_proj)
 ):
     print(
-        "WARNING: stock or older NKI Library kernels. It runs, but more slowly and with a BF16 prefill copy\n"
-        "(half the KV cache). For the current kernels:\n"
+        "WARNING: stock or older NKI Library kernels. FP8 decode gives wrong output at 33-64 concurrent\n"
+        "requests with them (max_num_seqs is 64 here), and prefill keeps a BF16 copy (half the KV cache).\n"
+        "Install the current kernels:\n"
         '  pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/nki-library.git@gptoss-trn2-perf-2.33"\n'
         "  rm -rf ~/.cache/neuron_libtorch",
         file=sys.stderr,

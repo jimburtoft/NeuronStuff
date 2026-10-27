@@ -2,8 +2,8 @@
 
 Tested on Trainium2 with the public **Neuron SDK 2.33 DLAMI**
 (`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`): measured on `trn2.3xlarge`
-2026-10-20, and every command below re-run as written on a fresh `trn2.3xlarge` on 2026-10-24
-(served throughput matched the table within 2%).
+2026-10-20, and every command below re-run as written on a fresh `trn2.3xlarge` on 2026-10-27
+(served throughput and accuracy in [Results](#results) are from that run).
 
 The DLAMI's stock vllm-neuron runs GPT-OSS, but slowly and only with extra flags. This guide installs
 two public branches on top of the DLAMI's vLLM environment. They carry the GPT-OSS changes we have
@@ -14,8 +14,9 @@ validated on Trainium2:
 | [`jimburtoft/vllm-neuron@gptoss-trn2-perf-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/gptoss-trn2-perf-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus GPT-OSS model changes: FP8 expert weights, faster prefill and decode, and start-up fixes |
 | [`jimburtoft/nki-library@gptoss-trn2-perf-2.33`](https://github.com/jimburtoft/nki-library/tree/gptoss-trn2-perf-2.33) | NKI Library 2.33 plus small changes to five kernels (MoE decode, MoE prefill, attention). See [`GPT_OSS_TRN2_PATCHES.md`](https://github.com/jimburtoft/nki-library/blob/gptoss-trn2-perf-2.33/GPT_OSS_TRN2_PATCHES.md) |
 
-Both are drop-in replacements for the DLAMI's copies. The model code detects the patched kernels and
-still works with the stock NKI Library, just more slowly.
+Both are drop-in replacements for the DLAMI's copies. **Install both.** With `"quantization": "fp8"`, the DLAMI's own
+NKI Library gives wrong output when 33-64 requests decode at once (see [FP8 with the stock NKI Library](#notes));
+the branch has the fix (`fc5fec9`, 2026-10-26). With BF16 the stock NKI Library is correct, just slower.
 
 Compared with the DLAMI's stock plugin, same instance (details in [Results](#results)):
 
@@ -91,9 +92,13 @@ python -c "
 from nkilib.core.moe.moe_tkg import selective_expert_impl as m
 import vllm_neuron.vllm.platform as p
 from nkilib.core.moe.moe_cte import bwmm_shard_on_I as c
+from nkilib.core.moe.moe_tkg import mlp_tkg_down_projection_lhs_rhs_swap as d
+import inspect
 print('patched kernels:', getattr(m, 'SUPPORTS_GATE_UP_MAJOR', False) and getattr(c, 'SUPPORTS_GATE_UP_MAJOR', False))
+print('FP8 decode fix: ', 'psum_tiles.start_offset' in inspect.getsource(d))
 print('patched plugin: ', hasattr(p.NeuronPlatform, '_cap_memory_for_gpt_oss_fp8'))"
 # patched kernels: True
+# FP8 decode fix:  True
 # patched plugin:  True
 ```
 
@@ -225,23 +230,24 @@ Output tokens/s at 1 / 4 / 16 / 32 / 64 concurrent requests:
 | Configuration | ~400-token prompts | ~4,000-token prompts |
 |---|---|---|
 | stock DLAMI plugin (BF16)\* | 92 / 135 / 196 / 264 / - | 35 / 40 / 42 / 40 / - |
-| FP8, `max-num-batched-tokens 512` | 178 / 383 / 640 / 935 / 1,025 | 112 / 173 / 211 / 235 / 239 |
-| FP8, `max-num-batched-tokens 2048` | 171 / 352 / 557 / 768 / 789 | 134 / 230 / 303 / 356 / 348 |
-| **FP8, 2048 + prefill buckets (the command above)** | **177 / 379 / 633 / 922 / 955** | **134 / 230 / 303 / 356 / 347** |
+| **the command above (FP8, 2048 + prefill buckets, no BF16 copy)** | **176 / 378 / 626 / 910 / 1,167** | **134 / 230 / 304 / 357 / 389** |
+| FP8, `max-num-batched-tokens 512`\*\* | 178 / 383 / 640 / 935 / - | 112 / 173 / 211 / 235 / - |
+| FP8, `max-num-batched-tokens 2048`\*\* | 171 / 352 / 557 / 768 / - | 134 / 230 / 303 / 356 / - |
 
 \* 1 to 32 concurrent requests only, with `--max-num-seqs 32`, `max-num-batched-tokens 512`,
 `NEURON_SKIP_EFA_AFFINITY=1` and `--hf-overrides`.
 
-The rows for 512, 2048 and buckets were measured on 2026-10-24 on one Trainium2 device (4 cores of a
-trn2.48xlarge, SDK 2.33 release container, same branches). Our earlier trn2.3xlarge numbers for 512 and 2048 match
-them within 1-3 %.
+\*\* Measured 2026-10-24 with the BF16 prefill copy, before the FP8 decode fix (`fc5fec9`). The 64-request
+column of these rows ran on the incorrect kernel and is not shown.
+
+The first row was re-measured on 2026-10-27 on a fresh trn2.3xlarge with every command in this guide as written
+(published branches, including the fix). GSM8K-CoT (250 questions) at 64 concurrent requests on that server: 0.880.
 
 - **Use 2048 + buckets as the default.** Short prompts get the speed of 512 (time to first token
   44 ms at 128 tokens, vs 77 ms with 2048 alone) and long prompts the speed of 2048 (1.3-1.5x the
   throughput of 512).
-- These three rows were measured with the BF16 prefill copy (see the next note), where 2048 leaves less KV cache
-  than 512 (353K vs 468K tokens); short prompts at 64 concurrent requests were then 7 % faster with 512. Without
-  the copy (now the default) both have room for all 64 requests.
+- The `512` and `2048` rows were measured with the BF16 prefill copy (see the notes), where 2048 leaves less KV
+  cache than 512 (353K vs 468K tokens). Without the copy (now the default) both have room for all 64 requests.
 - **More than 64 concurrent requests made it slower.** Each decode step got slower faster than the
   batch grew.
 
@@ -261,6 +267,13 @@ output tokens matched the stock plugin in our offline checks.
 
 ## Notes
 
+- **FP8 with the stock NKI Library gives wrong output at 33-64 concurrent requests.** The DLAMI's NKI Library
+  (and NKI Library main) applies the per-channel FP8 down-projection scales to the wrong columns in the decode MoE
+  kernel when the batch rounds up to the 64-request decode graph. Output is incoherent: GSM8K at 64 concurrent
+  requests scored 0.005 with the stock kernel and 0.880 with the fix. The branch carries the fix from
+  `fc5fec9` (2026-10-26) on. **If you installed the NKI Library branch before 2026-10-26, reinstall it and run
+  `rm -rf ~/.cache/neuron_libtorch`.** BF16 is not affected. To use FP8 without the branch, keep
+  `--max-num-seqs 32` or lower.
 - **Stock vllm-neuron without the branches.** The DLAMI's own plugin needs
   `NEURON_SKIP_EFA_AFFINITY=1` (trn2.3xlarge has no EFA, and all four workers die with
   `No EFA device found ... /infiniband`). It also needs
@@ -274,7 +287,8 @@ output tokens matched the stock plugin in our offline checks.
   set `VLLM_NEURON_BACKEND=vllm_neuron`.
 - **Two smaller copies were slower than one TP=4 copy.** Running two TP=2 servers on one device
   (cores 0-1 and 2-3) peaked at 829 / 364 tokens/s (short / long prompts), against 1,014 / 380 for one
-  TP=4 server. Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
+  TP=4 server in the same run (2026-10-20; FP8 with the BF16 copy, before the FP8 decode fix, so the 64-request
+  numbers of both are approximate). Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
 - **Don't go below TP=2.** The weights do not fit on one core. TP=2 works (see the previous note), but
   one TP=4 server is faster.
 - **FP8 is supported at TP=4 (and TP=2), not TP=8.** At TP=8 the per-core slice of each expert is too small
@@ -289,13 +303,14 @@ output tokens matched the stock plugin in our offline checks.
   speed either way (time to first token 127.5 vs 129.0 ms at 2,048 tokens; decode 5.20 vs 5.20 ms at batch 1,
   20.6 vs 20.7 ms at batch 32). Served throughput (output tok/s, same command, 2026-10-26):
 
-  | | c1 / 4 / 16 / 32 / 64, ~400-token prompts | ~4,000-token prompts |
+  | | c1 / 4 / 16 / 32, ~400-token prompts | ~4,000-token prompts |
   |---|---|---|
-  | **default (no copy)** | 176 / 372 / 613 / 888 / **1,118** | 134 / 228 / 298 / 352 / **384** |
-  | `"gpt_oss_fp8_prefill": "bf16_copy"` | 177 / 378 / 627 / 911 / 945 | 135 / 231 / 304 / 358 / 349 |
+  | **default (no copy)** | 176 / 372 / 613 / 888 | 134 / 228 / 298 / 352 |
+  | `"gpt_oss_fp8_prefill": "bf16_copy"` | 177 / 378 / 627 / 911 | 135 / 231 / 304 / 358 |
 
   The copy is 1-3 % faster at 4-32 concurrent requests (time to first token under load is a little lower);
-  without it, 10-18 % faster at 64 and 2.1x the KV cache. GSM8K-CoT (250 questions): 0.880-0.892 in all four
+  without it the KV cache is 2.1x. (This comparison was measured before the FP8 decode fix, so its 64-request
+  column is not shown; with the fix, the default reaches 1,167 / 389 tokens/s at 64.) GSM8K-CoT (250 questions): 0.880-0.892 in all four
   runs (with and without the copy).
 - **Every change can be switched off** with an environment variable (`GPTOSS_*`). See the top of
   `vllm_neuron/model/gpt_oss/model_bf16.py` on the branch, and the
@@ -310,7 +325,8 @@ output tokens matched the stock plugin in our offline checks.
 | Symptom | Fix |
 |---|---|
 | No speed-up, and the check in step 2 prints `False` for the plugin | Reinstall vllm-neuron with `--no-deps --force-reinstall` |
-| Check prints `False` for the kernels | Reinstall the NKI Library branch, then `rm -rf ~/.cache/neuron_libtorch` |
+| Check prints `False` for the kernels or the FP8 decode fix | Reinstall the NKI Library branch, then `rm -rf ~/.cache/neuron_libtorch` |
+| FP8 answers turn to gibberish at high concurrency | The NKI Library is older than `fc5fec9`. Reinstall the branch and clear the cache, or use `--max-num-seqs 32` |
 | `posix_spawn failed: No such file or directory` at the first compile | `source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate` instead of calling its `python` directly |
 | `gpt_oss_mxfp4 quantization is currently not supported in neuron` | You are on the stock plugin. Install the branch (step 2) |
 | `No EFA device found ... /infiniband` | You are on the stock plugin. Install the branch, or set `NEURON_SKIP_EFA_AFFINITY=1` |
