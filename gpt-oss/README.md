@@ -277,6 +277,10 @@ output tokens matched the stock plugin in our offline checks.
   TP=4 server. Each TP=2 copy decodes about 1.5x slower, which cancels out the second copy.
 - **Don't go below TP=2.** The weights do not fit on one core. TP=2 works (see the previous note), but
   one TP=4 server is faster.
+- **FP8 is supported at TP=4 (and TP=2), not TP=8.** At TP=8 the per-core slice of each expert is too small
+  for the FP8 prefill kernel, which then fails to compile. With these branches, `"gpt_oss_fp8_prefill": "auto"`
+  keeps the BF16 copy at TP=8, so it still runs, more slowly and with the smaller KV cache. On Trainium3 use
+  MXFP4 at TP=8 (below).
 - **FP8 prefill and the KV cache.** By default (`"gpt_oss_fp8_prefill": "auto"` in `neuron_config`) prefill runs
   from the FP8 expert weights when the installed NKI Library supports it, as the branch does: KV cache 756K tokens
   with the command above, about 92 full-length 8K requests. With the DLAMI's own NKI Library, `"auto"` keeps a
@@ -312,6 +316,7 @@ output tokens matched the stock plugin in our offline checks.
 | `No EFA device found ... /infiniband` | You are on the stock plugin. Install the branch, or set `NEURON_SKIP_EFA_AFFINITY=1` |
 | `gpu_memory_utilization is reduced from 0.92 to 0.80` warning | The BF16 prefill copy is in use: the NKI Library branch is not installed (check step 2), or you set `"gpt_oss_fp8_prefill": "bf16_copy"` |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
+| `NCC_IGCA108` "Tensor with loop-carried dependency" in `bwmm_shard_on_I` | FP8 at TP=8 with `"gpt_oss_fp8_prefill": "fp8"`. Use TP=4, or leave it at `"auto"` (keeps the BF16 copy at TP=8) |
 | Stock plugin: decode ~3x slower than expected, first compile ~50 min | Install the branches, or set `VLLM_NEURON_BACKEND=vllm_neuron` on the stock plugin |
 
 ## Trainium3
@@ -322,7 +327,9 @@ instead of the Trainium2 one (no `quantization` setting, no NKI Library branch),
 `tensor_parallel_size=8`, `max_num_batched_tokens=2048` and
 `"num_batched_tokens_buckets": [128, 256, 512, 1024, 2048]`. See the
 [Trn3 section of the recipe on that branch](https://github.com/jimburtoft/vllm-neuron/blob/gptoss-trn3-mx-0.29/docs/model-recipes/gpt-oss.md#trn3-performance-options).
-Leave `VLLM_NEURON_BACKEND` and `--optimization-level` unset there too.
+Leave `VLLM_NEURON_BACKEND` and `--optimization-level` unset there too. Don't use `quantization="fp8"` on
+Trainium3: MXFP4 is faster (time to first token 19 vs 29 ms at 128 tokens, decode 3.0 vs 3.9 ms at batch 1),
+and FP8 needs TP=8 there, where the FP8 prefill kernel does not compile.
 
 ## References
 
