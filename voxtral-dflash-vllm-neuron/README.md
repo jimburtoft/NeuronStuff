@@ -70,7 +70,7 @@ vllm serve mistralai/Voxtral-Mini-3B-2507 \
   --max-model-len 2048 --max-num-seqs 1 --max-num-batched-tokens 2048 \
   --limit-mm-per-prompt '{"audio": 1}' --no-enable-prefix-caching --mm-processor-cache-gb 0 \
   --additional-config '{
-    "neuron_config": {"num_batched_tokens_buckets": [512, 2048], "num_seqs_buckets": [1],
+    "neuron_config": {"num_batched_tokens_buckets": [384, 2048], "num_seqs_buckets": [1],
                       "on_device_sampling_config": {"all_greedy": true}},
     "encoder_neuron_config": {"num_encoder_input_buckets": [1, 4], "encoder_attention_block_size": 375, "tp_size": 4}}' \
   --port 8000
@@ -89,11 +89,13 @@ is ready when `curl -s localhost:8000/health` returns 200.
 
 Settings:
 - `encoder_attention_block_size: 375` is fixed: one 30 s audio window is 375 audio tokens.
+- `num_batched_tokens_buckets` starts at `384`: a clip of up to 30 s gives a 383-token prompt, so a
+  `512` bucket would compute about 25% padding in prefill (about 2% slower at LNC=2, 4% at LNC=1).
 - `num_encoder_input_buckets`: the most 30 s windows one request can have. `[1, 4]` covers clips up
   to 2 minutes.
 - `encoder_neuron_config.tp_size` must divide 20 (the encoder's head count). Use 4 on trn2.3xlarge.
 - For long audio (up to 5 minutes): `--max-model-len 8192 --max-num-batched-tokens 8192`,
-  `"num_batched_tokens_buckets": [512, 8192]`, `"num_encoder_input_buckets": [1, 4, 10]`, and
+  `"num_batched_tokens_buckets": [384, 8192]`, `"num_encoder_input_buckets": [1, 4, 10]`, and
   `export VLLM_NEURON_RESERVED_HEADROOM_GIB=8` before `vllm serve`.
 - Batched serving (several requests in flight): use `--max-num-seqs 16` and add
   `"decode_context_length_buckets": [512]` to `neuron_config` and `"encoder_cache_num_blocks": 34`
