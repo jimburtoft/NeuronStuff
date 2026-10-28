@@ -48,7 +48,7 @@ source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate   
 
 # vllm-neuron with Voxtral (PR #69, pinned commit: batched DFlash mask fix, GQA decode kernel, SP audio encoder), in a side directory. --no-deps leaves the venv as shipped.
 git clone https://github.com/jimburtoft/vllm-neuron.git -b voxtral-dflash ~/vllm-neuron-voxtral
-git -C ~/vllm-neuron-voxtral checkout b5abae3
+git -C ~/vllm-neuron-voxtral checkout ee6b37e
 pip install --target ~/vn_voxtral --no-deps ~/vllm-neuron-voxtral
 
 # vLLM's "audio" extra is not in the DLAMI venv. Without it every transcription request returns HTTP 400
@@ -102,6 +102,10 @@ Settings:
   (2 x max-num-seqs + 2) to `encoder_neuron_config`. Use commit `66ed48f` or later (`43ec97d` adds the GQA decode kernel, about 9% faster; `b5abae3` the sequence-parallel audio encoder): with earlier
   commits the draft's acceptance drops by about a third when 2-8 requests are in flight. See the
   Voxtral recipe in the PR (`docs/model-recipes/voxtral.md`) for the measured throughput.
+- Two replicas at LNC=1 (more throughput when two or more requests are in flight): prepend
+  `NEURON_LOGICAL_NC_CONFIG=1 VLLM_ENGINE_READY_TIMEOUT_S=3600` and add `--data-parallel-size 2`;
+  `--max-num-seqs` is then per replica. The first start compiles for about 25 minutes. Commands
+  and measurements: the Voxtral recipe in the PR, "LNC=1: two replicas on one trn2.3xlarge".
 
 ## 5. Transcribe
 
