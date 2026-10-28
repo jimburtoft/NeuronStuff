@@ -48,7 +48,7 @@ source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate   
 
 # vllm-neuron with Voxtral (PR #69, pinned commit: batched DFlash mask fix, GQA decode kernel, SP audio encoder), in a side directory. --no-deps leaves the venv as shipped.
 git clone https://github.com/jimburtoft/vllm-neuron.git -b voxtral-dflash ~/vllm-neuron-voxtral
-git -C ~/vllm-neuron-voxtral checkout ee6b37e
+git -C ~/vllm-neuron-voxtral checkout e0778ed
 pip install --target ~/vn_voxtral --no-deps ~/vllm-neuron-voxtral
 
 # vLLM's "audio" extra is not in the DLAMI venv. Without it every transcription request returns HTTP 400
@@ -177,3 +177,5 @@ audio and on how well your draft matches it.
 | `nrt_tensor_allocate status=4` during warmup with long audio | `export VLLM_NEURON_RESERVED_HEADROOM_GIB=8`. |
 | `neuronx-cc was forcibly killed` during the first start | Host out of memory. Add swap (step 2). |
 | tau near 1 with a draft | Draft config mismatch. See "Using your own DFlash checkpoint". |
+| Workers fail at start with `No EFA device found at /sys/bus/pci/devices/.../infiniband` | The EFA network device is not visible, so the plugin's CPU-affinity pinning (a performance optimization) fails. `export NEURON_SKIP_EFA_AFFINITY=1` before `vllm serve`. |
+| LNC=1 two-replica server: `Timed out waiting for engine core processes to start` | The first start compiles both replicas (about 25 min). `export VLLM_ENGINE_READY_TIMEOUT_S=3600`. |
