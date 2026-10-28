@@ -96,9 +96,12 @@ from nkilib.core.moe.moe_tkg import mlp_tkg_down_projection_lhs_rhs_swap as d
 import inspect
 print('patched kernels:', getattr(m, 'SUPPORTS_GATE_UP_MAJOR', False) and getattr(c, 'SUPPORTS_GATE_UP_MAJOR', False))
 print('FP8 decode fix: ', 'psum_tiles.start_offset' in inspect.getsource(d))
+import nkilib.experimental.transformer.attention_block_tkg as a
+print('EAGLE3 fix:     ', 'if S_tkg == 1:' in inspect.getsource(a))
 print('patched plugin: ', hasattr(p.NeuronPlatform, '_cap_memory_for_gpt_oss_fp8'))"
 # patched kernels: True
 # FP8 decode fix:  True
+# EAGLE3 fix:      True
 # patched plugin:  True
 ```
 
@@ -197,6 +200,44 @@ On a trn2.48xlarge, pin a server to one device with `NEURON_VISIBLE_DEVICES=0-3`
 0-3). vllm-neuron rejects `NEURON_RT_VISIBLE_CORES`.
 
 ---
+
+### Optional: EAGLE3 speculative decoding
+
+A small public draft model,
+[`RedHatAI/gpt-oss-20b-speculator.eagle3`](https://huggingface.co/RedHatAI/gpt-oss-20b-speculator.eagle3), proposes
+one token ahead and the target model checks it in the same step. Greedy output is unchanged. It needs the NKI
+Library branch at `e9b52c6` (2026-10-28) or later; reinstall it (step 2) if you installed earlier.
+
+```bash
+vllm serve ~/models/gpt-oss-20b \
+  --tensor-parallel-size 4 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 2048 \
+  --max-num-seqs 16 \
+  --block-size 128 \
+  --no-enable-prefix-caching \
+  --additional-config '{"neuron_config": {
+      "quantization": "fp8",
+      "num_batched_tokens_buckets": [128, 256, 512, 1024, 2048],
+      "decode_context_length_buckets": [1024, 2048],
+      "num_seqs_buckets": [1, 4, 16],
+      "on_device_sampling_config": {"all_greedy": true}}}' \
+  --speculative-config '{"method": "eagle3", "model": "RedHatAI/gpt-oss-20b-speculator.eagle3", "num_speculative_tokens": 1}'
+```
+
+Measured on trn2.3xlarge with chat prompts and 256 output tokens (2026-10-28):
+
+| Concurrent requests | 1 | 4 | 16 |
+|---|---:|---:|---:|
+| Output tokens/s without EAGLE3 | 167 | 410 | 707 |
+| **with EAGLE3** | **187 (+12 %)** | 402 (-2 %) | **907 (+28 %)** |
+
+- About 72 % of the drafted tokens were accepted. GSM8K-CoT (all 1,319 questions) scored 0.876 with EAGLE3 and
+  0.873 without.
+- Use `"num_speculative_tokens": 1`. With 2 it was slower at every concurrency.
+- It helps most at 16 concurrent requests and does nothing at 4. We have not measured it above 16 or with
+  `max_model_len` above 4096.
+- The first start compiles for about 48 minutes instead of about 20.
 
 ## Results
 
@@ -332,6 +373,7 @@ output tokens matched the stock plugin in our offline checks.
 | `No EFA device found ... /infiniband` | You are on the stock plugin. Install the branch, or set `NEURON_SKIP_EFA_AFFINITY=1` |
 | `gpu_memory_utilization is reduced from 0.92 to 0.80` warning | The BF16 prefill copy is in use: the NKI Library branch is not installed (check step 2), or you set `"gpt_oss_fp8_prefill": "bf16_copy"` |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
+| `cannot align DMA operands ... partition count (8)` in `attention_block_tkg` with `--speculative-config` | The NKI Library is older than `e9b52c6`. Reinstall the branch and clear the cache |
 | `NCC_IGCA108` "Tensor with loop-carried dependency" in `bwmm_shard_on_I` | FP8 at TP=8 with `"gpt_oss_fp8_prefill": "fp8"`. Use TP=4, or leave it at `"auto"` (keeps the BF16 copy at TP=8) |
 | Stock plugin: decode ~3x slower than expected, first compile ~50 min | Install the branches, or set `VLLM_NEURON_BACKEND=vllm_neuron` on the stock plugin |
 
