@@ -284,6 +284,11 @@ column of these rows ran on the incorrect kernel and is not shown.
 The first row was re-measured on 2026-10-27 on a fresh trn2.3xlarge with every command in this guide as written
 (published branches, including the fix). GSM8K-CoT (250 questions) at 64 concurrent requests on that server: 0.880.
 
+2026-10-28 update (branches `420e715` / `2038cf8`): decode input_ids are built on the device, the decode context
+bucket follows live requests only, and the attention output projection initializes its accumulator with the bias.
+Same command, 4 cores of a trn2.48xlarge, A/B against the previous branches on the same day: +0.5 to +1.5 % output
+tok/s at every concurrency (178 / 386 / 639 / 935 / 1,189 and 135 / 233 / 307 / 362 / 394); GSM8K-CoT 0.884.
+
 - **Use 2048 + buckets as the default.** Short prompts get the speed of 512 (time to first token
   44 ms at 128 tokens, vs 77 ms with 2048 alone) and long prompts the speed of 2048 (1.3-1.5x the
   throughput of 512).
