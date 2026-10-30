@@ -11,10 +11,10 @@ Measured on trn2.3xlarge (one Trainium2 device, TP=4) with the recommended confi
 
 | Workload (in / out tokens) | Peak output tok/s (concurrency) | Single request: TTFT / time per output token |
 |---|---|---|
-| 128 / 512 | 1,061 (256) | 76 ms / 21.1 ms |
-| 1024 / 256 | 773 (128) | 136 ms / 21.1 ms |
-| 2048 / 512 | 787 (256) | 247 ms / 21.1 ms |
-| 896x672 image + 256 / 128 | 304 (128) | 343 ms / 21.1 ms |
+| 128 / 512 | 1,839 (256) | 78 ms / 21.0 ms |
+| 1024 / 256 | 1,112 (256) | 136 ms / 21.0 ms |
+| 2048 / 512 | 1,154 (512) | 249 ms / 21.0 ms |
+| 896x672 image + 256 / 128 | 346 (256) | 348 ms / 21.0 ms |
 
 With DFlash speculative decoding (optional, section 6), a single request runs at **133 output tok/s** on natural text, 2.8x faster than without it.
 
@@ -84,27 +84,28 @@ curl -sLO https://raw.githubusercontent.com/jimburtoft/NeuronStuff/main/muse-gli
 
 **Recommended config: FP8 MLP weights plus FP8 KV cache.**
 - MLP weights are self-quantized from the BF16 checkpoint at load time, per output channel.
-- 58 sequences of 8192 tokens fit in the KV cache.
+- The three `VLLM_NEURON_SWA_*` settings admit requests by the KV they will actually use. They free out-of-window sliding-window blocks after prefill, and keep a fixed ring per sliding-window layer group. KV memory then no longer limits concurrency: 128 requests use about a fifth of the pool. The ring needs `--max-num-batched-tokens` equal to `--max-model-len`, prefix caching off, and no speculative decoding.
 
 ```bash
 export NEURON_SKIP_EFA_AFFINITY=1 VLLM_NEURON_SWA_ALIGN_TOKENS=4096
 export MUSE_GLIMMER_FP8=mlp MUSE_GLIMMER_KV_SCALES=$PWD/kv_scales.json
-export VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION=0.27
+export VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION=0.21
 export VLLM_NEURON_BARRIER_TIMEOUT=14400            # FP8 prefill graphs take long to compile
+export VLLM_NEURON_SWA_REAL_ADMISSION=1 VLLM_NEURON_SWA_EARLY_FREE=1 VLLM_NEURON_SWA_RING=1
 export MUSE_GLIMMER_VIS_SMALL_BLOCK=1 MUSE_GLIMMER_VIS_MLP=nki MUSE_GLIMMER_VIS_LN=fused
 
 vllm serve ~/models/Muse-Glimmer-30B --served-model-name muse --tensor-parallel-size 4 \
-  --max-model-len 8192 --max-num-seqs 64 --max-num-batched-tokens 8192 \
+  --max-model-len 8192 --max-num-seqs 128 --max-num-batched-tokens 8192 \
   --kv-cache-dtype fp8 --max-logprobs 0 --no-enable-prefix-caching \
   --limit-mm-per-prompt '{"image": 1, "video": 0}' --mm-processor-kwargs '{"max_image_tokens": 1024}' \
   --additional-config '{
     "neuron_config": {"num_batched_tokens_buckets": [512, 1024, 2048, 4096, 8192],
-                      "num_seqs_buckets": [1, 2, 4, 8, 16, 32, 48, 64],
+                      "num_seqs_buckets": [1, 2, 4, 8, 16, 32, 48, 64, 96, 128],
                       "decode_context_length_buckets": [4096],
                       "on_device_sampling_config": {"all_greedy": true}},
     "vision_neuron_config": {"vision_attention_block_size": 4096,
                              "num_vision_tokens_buckets": [1024, 2048, 3072, 4096],
-                             "encoder_cache_num_blocks": 16, "tp_size": 4}}' \
+                             "encoder_cache_num_blocks": 64, "tp_size": 4}}' \
   --port 8000
 ```
 
@@ -134,7 +135,8 @@ PY
 BF16 has room for 16 sequences: 27 ms per output token, 184-455 peak output tok/s.
 
 **Settings that matter:**
-- **KV cap.** The default `VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION` (0.30) leaves no device memory for the compiled graphs, and the server fails to load. Use the values above.
+- **KV cap.** The default `VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION` (0.30) leaves no device memory for the compiled graphs, and the server fails to load. Use the values above. At `--max-num-seqs 128`, 0.27 runs out of runtime DMA memory on 6000-token prompts late in a full load test; 0.21 is clean and has the same peak throughput.
+- **Encoder cache.** Many concurrent small images need about 4 cache blocks per concurrent image (`encoder_cache_num_blocks`). Too few gives `Encoder cache full` and the engine stops.
 - **Validate before changing caps or buckets.** If you change the KV cap, `max_num_seqs` or the bucket lists, run a load test that touches every bucket before trusting it. Runtime DMA buffers are allocated the first time each graph runs, so a short test can pass while full load fails with `status=4`.
 - **`VLLM_NEURON_SWA_ALIGN_TOKENS=4096`** makes sliding-window decode move larger KV chunks (+12-14 % throughput under load). Keep it below `--max-model-len`.
 - **Videos** can use up to 96 frames at `--max-model-len 8192`. They need `"video": 1` in `--limit-mm-per-prompt` and a vision bucket large enough for the frame count. See the model README.
@@ -146,17 +148,18 @@ DFlash was validated with vLLM's offline engine. This is the configuration that 
 ```python
 import os
 os.environ.update(MUSE_GLIMMER_FP8="mlp", VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION="0.10",
+                  VLLM_NEURON_SWA_REAL_ADMISSION="1", VLLM_NEURON_SWA_EARLY_FREE="1",
                   VLLM_NEURON_SWA_ALIGN_TOKENS="4096", VLLM_NEURON_BARRIER_TIMEOUT="14400",
                   NEURON_SKIP_EFA_AFFINITY="1")
 from vllm import LLM, SamplingParams
 
 llm = LLM(model=os.path.expanduser("~/models/Muse-Glimmer-30B"), tensor_parallel_size=4,
-          max_model_len=8192, max_num_batched_tokens=2048, max_num_seqs=8, enable_prefix_caching=False,
+          max_model_len=8192, max_num_batched_tokens=2048, max_num_seqs=16, enable_prefix_caching=False,
           speculative_config={"method": "dflash", "num_speculative_tokens": 15,
                               "model": os.path.expanduser("~/models/Muse-Glimmer-30B-assistant")},
           additional_config={"mm_language_model_only": True,
                              "neuron_config": {"num_batched_tokens_buckets": [512, 2048],
-                                               "num_seqs_buckets": [1, 4, 8],
+                                               "num_seqs_buckets": [1, 4, 8, 16],
                                                "on_device_sampling_config": {"all_greedy": True}}},
           limit_mm_per_prompt={"image": 0, "video": 0})
 out = llm.generate(["Explain how a heat pump works."], SamplingParams(max_tokens=256, temperature=0))
@@ -165,15 +168,16 @@ print(out[0].outputs[0].text)
 
 On natural text the drafter averages about 4.1 accepted tokens per step (256 output tokens):
 
-| Concurrency | FP8 MLP | + DFlash |
+| Concurrency | recommended server (no DFlash) | DFlash server |
 |---|---|---|
-| 1 | 48 tok/s | 133 tok/s |
-| 4 | 131 tok/s | 291 tok/s |
-| 8 | 292 tok/s | 355 tok/s |
+| 1 | 47 tok/s | 133 tok/s |
+| 4 | 134 tok/s | 294 tok/s |
+| 8 | 311 tok/s | 377 tok/s |
+| 16 | 560 tok/s | 459 tok/s |
 
 **Scope:**
-- **Latency, not maximum throughput.** DFlash runs with a smaller KV cap and stops helping above about 8 concurrent requests.
-- **BF16 instead of FP8:** drop `MUSE_GLIMMER_FP8` and use cap 0.08.
+- **Latency, not maximum throughput.** DFlash runs with a smaller KV cap and stops helping above about 8 concurrent requests. For mixed traffic, run both servers and route by load.
+- **DFlash with the FP8 KV cache does not fit** in device memory on trn2.3xlarge. Keep the KV cache BF16 for DFlash. The admission and early-free settings work with it; the ring does not.
 - **Text only:** images with DFlash have not been tested.
 - **Offline engine only:** `vllm serve` with DFlash was not separately validated.
 - **Long prompts:** the vllm-neuron branch block-aligns prefill chunks under speculative decoding. Without that, prompts longer than one chunk gave wrong output.
