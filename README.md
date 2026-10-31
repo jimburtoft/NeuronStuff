@@ -1,6 +1,7 @@
 # NeuronStuff
 Trainium and Inferentia examples using the Neuron SDK.  This is more a place for me to store reminders and collections of useful code.
 
+- [gemma3-12b-vllm-neuron](./gemma3-12b-vllm-neuron/): Serve Gemma 3 12B (`google/gemma-3-12b-it`, text) with vLLM on one Trainium2 device (trn2.3xlarge), on the public Neuron SDK 2.33 DLAMI with our vllm-neuron and NKI Library branches: sliding-window-aware KV admission and ring, `head_dim` 256 decode kernels. 1,838 output tok/s with 2,048-token prompts (83 at once), 1,418 with 4,096-token prompts, BF16.
 - [gpt-oss](./gpt-oss/): Serve GPT-OSS-20B with vLLM on Trainium2 (trn2.3xlarge) on the public Neuron SDK 2.33 DLAMI, with our vllm-neuron and NKI Library branches: FP8 expert weights, 5.5x lower time to first token and up to 2x faster decode than the stock plugin.
 - [boltz-neuron](https://github.com/jimburtoft/boltz-neuron) (separate repo): Boltz-2 protein structure prediction on Inferentia2 (inf2.xlarge) with TorchNeuron, on the public Neuron SDK 2.33 torch-neuronx 2.14.0 DLAMI. Drop-in `boltz predict` CLI plus a prebuilt compile cache.
 - [moshi-vllm-omni-neuron](./moshi-vllm-omni-neuron/): Serve kyutai Moshi (full-duplex speech-to-speech, 7.7B) on Trainium2 (trn2.3xlarge) behind vLLM-Omni's realtime duplex WebSocket API, on the public Neuron SDK 2.33 DLAMI with our vllm-omni-neuron Moshi workers. 6 real-time conversations per instance, ~95 ms per-frame response latency.
