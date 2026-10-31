@@ -28,16 +28,20 @@ stays in device memory, so only audio and a few tokens cross the host per frame.
 
 ## Results (trn2.3xlarge, one server = 2 NeuronCores)
 
-| Concurrent sessions | Every frame in real time | First audio | Per-frame response latency, p50 / p99 / max |
+| Concurrent sessions | Every frame in real time | First audio | Per-frame response latency, p50 / p99 |
 |---|---|---|---|
-| 1 | yes | 175 ms | 93 / 96 / 97 ms |
-| 3 | yes | 250 ms | 136 / 175 / 180 ms |
+| 1 | yes | 175 ms | 93 / 96 ms |
+| 4 | yes | 220-230 ms | 112-129 / 151-167 ms |
+| 5 | yes | 242 ms | 135-147 / 176-186 ms |
 
-A trn2.3xlarge has 4 NeuronCores, so two servers give **6 real-time conversations per instance** with this first
-version (plain PyTorch graphs, no custom kernels yet).
+A trn2.3xlarge has 4 NeuronCores, so two servers run **10 real-time conversations per instance** (measured: all 10
+sessions concurrent, every frame on time, p99 latency at most 180 ms).
 
 Per-frame response latency is the time from sending an 80 ms input frame to receiving the 80 ms of Moshi audio it
 produces (measured on a 28.8 s conversation streamed at real-time pace; it does not grow over the session).
+
+The temporal transformer's attention runs on the fused decode kernel from the Neuron Kernel Library
+(`attention_block_tkg`, shipped in the DLAMI); everything else is plain PyTorch compiled by the Neuron compiler.
 
 Quality: with greedy decoding the Trainium output reproduces the kyutai reference implementation's text on our
 test clips, and Whisper's transcript of the generated speech matches Moshi's inner-monologue text.
@@ -73,7 +77,7 @@ Activate the venv (don't just call its `python`): the Neuron compiler is found t
 ## 4. Start the server
 
 ```bash
-MOSHI_B=3 python -m moshi_neuron.serving.make_deploy /tmp/moshi.yaml   # 3 sessions; stage 0 on core 0, stage 1 on core 1
+MOSHI_B=5 python -m moshi_neuron.serving.make_deploy /tmp/moshi.yaml   # 5 sessions; stage 0 on core 0, stage 1 on core 1
 MOSHI_NC_COUNT=4 python -m moshi_neuron.serving.serve_launcher serve kyutai/moshiko-pytorch-bf16 \
     --deploy-config /tmp/moshi.yaml --port 8000 --omni --init-timeout 3600 --stage-init-timeout 3600
 ```
@@ -81,10 +85,10 @@ MOSHI_NC_COUNT=4 python -m moshi_neuron.serving.serve_launcher serve kyutai/mosh
 The first start downloads the weights (15 GB) and compiles the graphs, which takes about 8 minutes; wait for
 `Application startup complete`. Later starts load the graphs from the compile cache.
 
-For a second server on the other two cores (6 sessions per instance), run the same commands in another shell with
+For a second server on the other two cores (10 sessions per instance), run the same commands in another shell with
 `MOSHI_DEV0=2 MOSHI_DEV1=3` for `make_deploy`, a different YAML path and `--port 8001`.
 
-`make_deploy` options: `MOSHI_B` (sessions per server, default 1), `MOSHI_DEV0` / `MOSHI_DEV1` (cores),
+`make_deploy` options: `MOSHI_B` (sessions per server, default 1, at most 5: six sessions' KV caches do not fit next to the weights on one core), `MOSHI_DEV0` / `MOSHI_DEV1` (cores),
 `MOSHI_GREEDY=1` in the server environment for greedy decoding (default: Moshi's sampling, text temperature 0.7
 top-k 25, audio 0.8 top-k 250).
 
@@ -96,7 +100,7 @@ Stream a 24 kHz (or any rate; it is resampled) wav file at real-time pace and re
 python -m moshi_neuron.serving.duplex_client --wav my_question.wav --sessions 1 --out out/
 ```
 
-`out/session0.wav` is Moshi's side of the conversation, time-aligned with your input. `--sessions 3` opens three
+`out/session0.wav` is Moshi's side of the conversation, time-aligned with your input. `--sessions 5` opens five
 concurrent conversations. Any client of the vLLM-Omni realtime duplex protocol works, for example
 `vllm_omni.clients.duplex.DuplexClient` with
 `SessionConfig(input_audio=AudioFormat("pcm_f32le", 24000), output_audio=AudioFormat("pcm16", 24000))`.
