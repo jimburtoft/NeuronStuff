@@ -34,8 +34,10 @@ stays in device memory, so only audio and a few tokens cross the host per frame.
 | 4 | yes | 220-230 ms | 112-129 / 151-167 ms |
 | 5 | yes | 242 ms | 135-147 / 176-186 ms |
 
-A trn2.3xlarge has 4 NeuronCores, so two servers run **10 real-time conversations per instance** (measured: all 10
-sessions concurrent, every frame on time, p99 latency at most 180 ms).
+A trn2.3xlarge has 4 NeuronCores. The Mimi decoder is light enough that one decoder core serves three
+language-model cores, so one server with three stage-0 replicas runs **15 real-time conversations per instance**
+(measured: all 15 sessions concurrent, every frame on time, first audio <= 349 ms, p99 latency <= 248 ms). Two
+independent 2-core servers give 10.
 
 Per-frame response latency is the time from sending an 80 ms input frame to receiving the 80 ms of Moshi audio it
 produces (measured on a 28.8 s conversation streamed at real-time pace; it does not grow over the session).
@@ -85,7 +87,17 @@ MOSHI_NC_COUNT=4 python -m moshi_neuron.serving.serve_launcher serve kyutai/mosh
 The first start downloads the weights (15 GB) and compiles the graphs, which takes about 8 minutes; wait for
 `Application startup complete`. Later starts load the graphs from the compile cache.
 
-For a second server on the other two cores (10 sessions per instance), run the same commands in another shell with
+**15 sessions per instance** (three language-model cores, one shared decoder core):
+
+```bash
+MOSHI_B=5 MOSHI_REP0=3 MOSHI_DEV0=0,2,3 MOSHI_DEV1=1 python -m moshi_neuron.serving.make_deploy /tmp/moshi15.yaml
+MOSHI_NC_COUNT=4 python -m moshi_neuron.serving.serve_launcher serve kyutai/moshiko-pytorch-bf16 \
+    --deploy-config /tmp/moshi15.yaml --port 8000 --omni --init-timeout 3600 --stage-init-timeout 3600
+```
+
+The first start compiles the three replicas one after another (about 20 minutes).
+
+Alternatively, for two independent servers (10 sessions per instance), run the 2-core commands in another shell with
 `MOSHI_DEV0=2 MOSHI_DEV1=3` for `make_deploy`, a different YAML path and `--port 8001`.
 
 `make_deploy` options: `MOSHI_B` (sessions per server, default 1, at most 5: six sessions' KV caches do not fit next to the weights on one core), `MOSHI_DEV0` / `MOSHI_DEV1` (cores),
