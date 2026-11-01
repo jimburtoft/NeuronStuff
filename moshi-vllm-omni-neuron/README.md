@@ -112,7 +112,8 @@ Stream a 24 kHz (or any rate; it is resampled) wav file at real-time pace and re
 python -m moshi_neuron.serving.duplex_client --wav my_question.wav --sessions 1 --out out/
 ```
 
-`out/session0.wav` is Moshi's side of the conversation, time-aligned with your input. `--sessions 5` opens five
+`out/session0.wav` is Moshi's side of the conversation, time-aligned with your input, and `out/session0.txt` is
+Moshi's inner-monologue text (sent as `text` deltas on the `response.output_audio.delta` events). `--sessions 5` opens five
 concurrent conversations. Any client of the vLLM-Omni realtime duplex protocol works, for example
 `vllm_omni.clients.duplex.DuplexClient` with
 `SessionConfig(input_audio=AudioFormat("pcm_f32le", 24000), output_audio=AudioFormat("pcm16", 24000))`.
@@ -126,4 +127,3 @@ Moshi takes no `voice` or `instructions`.
 - Sessions can be longer than Moshi's 4-minute (3000-frame) attention window; the server caps them at 1 hour
   (`MOSHI_MAX_MODEL_LEN`, in 80 ms frames). Moshi itself tends to repeat or go quiet in very long one-sided
   monologues (the kyutai reference does the same).
-- The text side channel (Moshi's inner monologue) is not yet forwarded to the client.
