@@ -36,7 +36,7 @@ stays in device memory, so only audio and a few tokens cross the host per frame.
 
 A trn2.3xlarge has 4 NeuronCores. The Mimi decoder is light enough that one decoder core serves three
 language-model cores, so one server with three stage-0 replicas runs **15 real-time conversations per instance**
-(measured: all 15 sessions concurrent, every frame on time, first audio <= 349 ms, p99 latency <= 248 ms). Two
+(measured: all 15 sessions concurrent, every frame on time, first audio <= 280 ms, latency p50 124-140 ms, p99 <= 187 ms). Two
 independent 2-core servers give 10.
 
 Per-frame response latency is the time from sending an 80 ms input frame to receiving the 80 ms of Moshi audio it
@@ -123,5 +123,7 @@ Moshi takes no `voice` or `instructions`.
 - The installed vllm-omni 0.29 builds a PersonaPlex voice/persona prompt for every session, which Moshi
   checkpoints don't have. The launcher applies a small runtime patch (the same rule as upstream vllm-omni
   pull request [#9319](https://github.com/vllm-project/vllm-omni/pull/9319)): Moshi sessions start with no prompt.
-- Sessions longer than 240 s (3000 frames) are not supported yet.
+- Sessions can be longer than Moshi's 4-minute (3000-frame) attention window; the server caps them at 1 hour
+  (`MOSHI_MAX_MODEL_LEN`, in 80 ms frames). Moshi itself tends to repeat or go quiet in very long one-sided
+  monologues (the kyutai reference does the same).
 - The text side channel (Moshi's inner monologue) is not yet forwarded to the client.
