@@ -3,7 +3,7 @@
 Serve [`JetBrains/Mellum2.1-12B-A2.5B-Thinking`](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking)
 (a 12B mixture-of-experts reasoning model with 2.5B active parameters) on one `trn2.3xlarge` with vLLM, on the
 public **Neuron SDK 2.33 DLAMI** (`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`). Every command
-below was run as written on a `trn2.3xlarge`, starting from the stock DLAMI environment, on 2026-11-03.
+below was run as written on a `trn2.3xlarge`, starting from the stock DLAMI environment, on 2026-11-03 (numbers refreshed the same day after the decode optimization).
 
 The DLAMI's stock vllm-neuron does not support Mellum. This guide installs one public branch on top of the
 DLAMI's vLLM environment:
@@ -19,8 +19,9 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no spe
 
 | Workload | Output tokens/s (one device) |
 |---|---:|
-| Offline, 64 requests at once, ~70-token prompts, 1,024 output tokens | **1,975** |
-| Online (`vllm bench serve`), 32 concurrent requests, 1,024 in / 1,024 out | **1,405** (TPOT 20.0 ms) |
+| Offline, 64 requests at once, ~70-token prompts, 1,024 output tokens | **2,728** |
+| Offline, 64 requests at once, 4,096 output tokens | **2,067** |
+| Online (`vllm bench serve`), 32 concurrent requests, 1,024 in / 1,024 out | **1,451** (TPOT 19.3 ms) |
 | Offline, one request | **103** (9.7 ms per token) |
 
 ---
@@ -100,7 +101,7 @@ Versions in the environment after the install:
 | Component | Version |
 |---|---|
 | vllm | `0.29.0` |
-| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `159f307`) |
+| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `6c4b7ce`) |
 | transformers | `5.17.0` (has `MellumConfig`) |
 | nki | `0.7.0` |
 | neuronx-cc | `2.28.7631.0` |
@@ -216,14 +217,14 @@ a bf16 near-tie. For scale: Hugging Face's own bf16 model on CPU reaches a gap o
 
 ```
 == short prompts
-prompt 0: no divergence over 337 tokens
-prompt 1: first divergence at token 5, fp32 gap 0.2286, target in fp32 top-5 True -> PASS
+prompt 0: first divergence at token 78, fp32 gap 0.1846, target in fp32 top-5 True -> PASS
+prompt 1: no divergence over 53 tokens
 prompt 2: first divergence at token 6, fp32 gap 0.0161, target in fp32 top-5 True -> PASS
 prompt 3: first divergence at token 41, fp32 gap 0.0135, target in fp32 top-5 True -> PASS
-prompt 4: first divergence at token 68, fp32 gap 0.0053, target in fp32 top-5 True -> PASS
+prompt 4: first divergence at token 24, fp32 gap 0.0570, target in fp32 top-5 True -> PASS
 GATE PASS
 == long prompts
-prompt 0: first divergence at token 159, fp32 gap 0.1924, target in fp32 top-5 True -> PASS
+prompt 0: first divergence at token 160, fp32 gap 0.3463, target in fp32 top-5 True -> PASS
 prompt 1: first divergence at token 84, fp32 gap 0.1175, target in fp32 top-5 True -> PASS
 GATE PASS
 ```
@@ -242,7 +243,7 @@ python tools/mellum/gsm8k_eval.py --backend vllm --model JetBrains/Mellum2.1-12B
 ```bash
 python tools/mellum/bench.py JetBrains/Mellum2.1-12B-A2.5B-Thinking --ep --n 128 --max-num-seqs 64 \
   --fixed 1024 --max-model-len 2048
-# BENCH rep 1: 131072 out tok / 66.3s = 1977.8 out tok/s ...
+# BENCH rep 1: 131072 out tok / 48.1s = 2727.6 out tok/s ...
 ```
 
 Online, against the server from step 4:
@@ -257,29 +258,31 @@ vllm bench serve --model JetBrains/Mellum2.1-12B-A2.5B-Thinking --dataset-name r
 ## Results
 
 One trn2.3xlarge (one Trainium2 device), TP=4, expert parallel 4, LNC=2, BF16 weights and KV cache, greedy,
-SDK 2.33 DLAMI, vllm-neuron branch `mellum-trn2-0.29` @ `159f307`. Throughput numbers are the second of two
+SDK 2.33 DLAMI, vllm-neuron branch `mellum-trn2-0.29` @ `6c4b7ce`. Throughput numbers are the second of two
 runs after warm-up.
 
-| Offline (`bench.py`, ~70-token GSM8K prompts, 1,024 output tokens, EOS ignored) | Output tok/s |
+| Offline (`bench.py`, ~70-token GSM8K prompts, EOS ignored) | Output tok/s |
 |---|---:|
-| 1 request | 102.6 |
-| 32 requests at once | 1,743 |
-| 64 requests at once | 1,975 |
+| 1 request, 1,024 output tokens | 102.8 |
+| 32 requests at once, 1,024 output tokens | 1,818 |
+| 64 requests at once, 1,024 output tokens | 2,728 |
+| 128 requests at once, 1,024 output tokens | 2,683 |
+| 64 requests at once, 4,096 output tokens (`--max-model-len 4608`) | 2,067 |
 
 | Online (`vllm bench serve`, random 1,024 in / 1,024 out, 64 prompts) | |
 |---|---:|
-| Concurrency 32: output tok/s | 1,405 |
-| Median TTFT | 2,877 ms |
-| Median / P99 TPOT | 20.0 / 22.6 ms |
+| Concurrency 32: output tok/s | 1,451 |
+| Median TTFT | 2,859 ms |
+| Median / P99 TPOT | 19.3 / 21.9 ms |
 
-Without `--enable-expert-parallel` (every core holds all 64 experts at 1/4 width), short-prompt decode is faster
-(1 request: 163.9 tok/s; 64 requests: 2,111 tok/s), but prefill falls back to a torch MoE, and online with
-1,024-token prompts drops to 615 tok/s (TPOT 50 ms) because prefills stall decode. Use expert parallelism unless
-your prompts are short.
+Without `--enable-expert-parallel` (every core holds all 64 experts at 1/4 width), one request decodes faster
+(163.8 tok/s: each token reads 8 expert slices at 1/4 width instead of 8 whole experts on whichever cores own them),
+and batch 64 is about the same (2,822 tok/s), but batch 32 drops to 470-666 tok/s and online with 1,024-token
+prompts to 639 tok/s (TPOT 49 ms). Use expert parallelism unless you serve one request at a time.
 
 | Accuracy | |
 |---|---|
-| fp32 first-divergence gate (7 prompts) | PASS, max gap 0.229 |
+| fp32 first-divergence gate (7 prompts) | PASS, max gap 0.346 |
 | GSM8K, 100 questions | 97 % |
 
 ---
@@ -292,8 +295,9 @@ your prompts are short.
   plugin has no Mellum model. The branch uses transformers' `MellumConfig` and adds the model.
 - **MoE.** The router runs in fp32 (softmax over 64 experts, top 8, renormalized). In decode, only the routed
   experts' weights are read while that is fewer than the experts on the core, then every local expert once.
-  Prefill uses the NKI Library's blockwise expert kernel. The experts' hidden size (2,304) is zero-padded to
-  2,560 inside the MoE block, because the kernel works in tiles of 512.
+  Decode is limited by reading expert weights from HBM. Prefill uses the NKI Library's blockwise expert kernel.
+  The experts' hidden size (2,304) is zero-padded to 2,560 for that kernel (it works in tiles of 512); decode
+  reads only the real 2,304 rows (+38 % throughput at batch 64).
 - **RoPE.** Sliding-window layers use plain RoPE. The 7 full-attention layers use YaRN (factor 16 over an 8,192
   original context, attention factor 1.277), as in transformers.
 - **Not supported yet:** MTP speculative decoding (the checkpoint has no MTP head), FP8 weights or KV cache.
