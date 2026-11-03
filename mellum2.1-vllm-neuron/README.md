@@ -22,7 +22,9 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no spe
 | Offline, 64 requests at once, ~70-token prompts, 1,024 output tokens | **2,728** |
 | Offline, 64 requests at once, 4,096 output tokens | **2,067** |
 | Online (`vllm bench serve`), 32 concurrent requests, 1,024 in / 1,024 out | **1,451** (TPOT 19.3 ms) |
-| Offline, one request | **103** (9.7 ms per token) |
+| Online, 64 concurrent, 1,024 in / 4,096 out | **1,979** (TPOT 31.0 ms) |
+| One request (offline or online) | **103** (9.7 ms per token) |
+| One request with a 45,056-token prompt | 57.9 (TTFT 6.9 s, TPOT 10.5 ms) |
 
 ---
 
@@ -101,7 +103,7 @@ Versions in the environment after the install:
 | Component | Version |
 |---|---|
 | vllm | `0.29.0` |
-| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `6c4b7ce`) |
+| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `ebaa927`) |
 | transformers | `5.17.0` (has `MellumConfig`) |
 | nki | `0.7.0` |
 | neuronx-cc | `2.28.7631.0` |
@@ -185,6 +187,20 @@ What the settings do:
 | `--max-model-len 8192` | Prompt plus output. Mellum2.1 thinks before it answers (GSM8K-style questions: ~550 tokens on average, a few thousand for hard ones). Raise it for long agentic contexts. |
 | `--reasoning-parser qwen3` | Splits `<think>...</think>` into `reasoning`. |
 
+### Long prompts (up to ~48k tokens)
+
+Long prompts need segmented prefill, so turn the ring off and chunk prefill at 4,096 tokens:
+
+```bash
+export VLLM_NEURON_SWA_RING=0
+vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking --tensor-parallel-size 4 --enable-expert-parallel \
+  --max-model-len 49152 --max-num-seqs 4 --max-num-batched-tokens 4096 \
+  --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes
+```
+
+Do not use `--max-num-batched-tokens` equal to a long `--max-model-len` here: compiling one 24k+ token prefill
+graph needs more host memory than a trn2.3xlarge has, and the instance stops responding.
+
 ### Prefix caching
 
 Prefix caching needs segmented prefill, which the ring does not support. Turn the ring off and chunk prefill:
@@ -208,6 +224,9 @@ This configuration passed the same accuracy gate in three repeated offline runs 
 cd ~/vllm-neuron && source tools/mellum/env.sh
 python tools/mellum/fp32_gate.py --model JetBrains/Mellum2.1-12B-A2.5B-Thinking --enable-expert-parallel
 ```
+
+For the 20,549- and 40,232-token prompts add `--sets xlong` (with `VLLM_NEURON_SWA_RING=0`); both pass
+(max gap 0.154).
 
 The gate generates greedily for 7 prompts (5 short ones to EOS, and two ~3,500 / ~2,200-token code-review
 prompts with 1,024 output tokens, which cross the sliding window) and compares them with an fp32 Hugging Face
@@ -280,9 +299,25 @@ Without `--enable-expert-parallel` (every core holds all 64 experts at 1/4 width
 and batch 64 is about the same (2,822 tok/s), but batch 32 drops to 470-666 tok/s and online with 1,024-token
 prompts to 639 tok/s (TPOT 49 ms). Use expert parallelism unless you serve one request at a time.
 
+| Online matrix (`vllm bench serve`, random prompts, EOS ignored, `--max-model-len 8192`) | Output tok/s | TTFT p50 (ms) | TPOT p50 / p99 (ms) |
+|---|---:|---:|---:|
+| 128 in / 1,024 out, concurrency 1 / 16 / 64 | 103 / 996 / 1,859 | 82 / 659 / 2,471 | 9.7 / 15.4 / 32.0 (p99 34.3) |
+| 1,024 / 1,024, concurrency 1 / 16 / 64 | 102 / 910 / 1,581 | 184 / 1,493 / 5,638 | 9.7 / 16.1 / 35.0 (p99 40.3) |
+| 4,096 / 1,024, concurrency 1 / 16 / 64 | 98 / 698 / 1,034 | 534 / 4,400 / 16,780 | 9.7 / 18.6 / 45.5 (p99 61.2) |
+| 1,024 / 4,096, concurrency 1 / 16 / 64 | 103 / 1,030 / 1,979 | 183 / 1,487 / 5,646 | 9.7 / 15.2 / 31.0 (p99 32.3) |
+
+| Long context (segmented prefill, settings above, 1,024 out) | Output tok/s | TTFT p50 | TPOT p50 |
+|---|---:|---:|---:|
+| 16,384-token prompt, 1 / 4 concurrent | 77.4 / 167.6 | 2.4 / 5.9 s | 10.6 / 18.1 ms |
+| 32,768-token prompt, 1 / 4 concurrent | 65.2 / 119.1 | 4.9 / 12.2 s | 10.6 / 21.7 ms |
+| 45,056-token prompt, 1 / 4 concurrent | 57.9 / 97.1 | 6.9 / 17.1 s | 10.5 / 24.6 ms |
+
+Decode barely slows with context because 21 of the 28 layers only read a 1,024-token window.
+
 | Accuracy | |
 |---|---|
 | fp32 first-divergence gate (7 prompts) | PASS, max gap 0.346 |
+| fp32 gate, 20,549- and 40,232-token prompts | PASS, max gap 0.154 |
 | GSM8K, 100 questions | 97 % |
 
 ---
@@ -312,6 +347,7 @@ prompts to 639 tok/s (TPOT 49 ms). Use expert parallelism unless you serve one r
 | `No EFA device found ...` | `export NEURON_SKIP_EFA_AFFINITY=1` (in `env.sh`; the trn2.3xlarge has no EFA). |
 | `Automatic Prefix Caching (APC) requires segmented prefill` | Add `--no-enable-prefix-caching`, or see [Prefix caching](#prefix-caching). |
 | Compiler error with `Killed` / `F137` | Add swap (step 1). |
+| Instance stops responding during the first start with a long `--max-model-len` | Single-shot prefill graph too large to compile; use `--max-num-batched-tokens 4096` and `VLLM_NEURON_SWA_RING=0` (see [Long prompts](#long-prompts-up-to-48k-tokens)). |
 
 ## References
 
