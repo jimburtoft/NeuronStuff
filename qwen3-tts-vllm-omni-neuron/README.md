@@ -39,12 +39,12 @@ Throughput is seconds of audio generated per second.
 
 | Setup | Concurrent requests | Audio throughput | Request latency p50 | First audio p50 |
 |---|---|---|---|---|
-| 1 server, LNC=2 | 1 | 2.4x real time | 1.8 s | 67 ms |
-| 1 server, LNC=2 | 64 | 105x | 2.3 s | 103 ms |
-| 1 server, LNC=2 | 128 | 150x | 3.2 s | -- |
-| 1 server, LNC=2 | 256 | 158x | 6.7 s | -- |
-| **2 servers, LNC=1** | **128 (64 each)** | **259x** | **3.8 s** | -- |
-| **2 servers, LNC=1** | **200 (100 each)** | **270x** | **6.0 s** | -- |
+| 1 server, LNC=2 | 1 | 2.7x real time | 1.6 s | 60 ms |
+| 1 server, LNC=2 | 128 | 176x | 2.8 s | -- |
+| 1 server, LNC=2 | 256 | 186x | 5.7 s | -- |
+| 2 servers, LNC=1 | 200 (100 each) | 262x | 3.0 s | 260 ms |
+| **2 servers, LNC=1** | **400 (200 each)** | **367-373x** | **4.2-4.3 s** | 1.0 s |
+| 2 servers, LNC=1 | 600 (300 each) | 349x | 6.3 s | -- |
 
 - **Lowest single-request latency:** a server with a batch size of 1 takes 0.72 s for a ~4 s utterance; streaming
   first audio arrives in 41 ms.
@@ -96,16 +96,16 @@ QTTS_NC_COUNT=4 python -m qwen3_tts_neuron.serving.serve_launcher serve Qwen/Qwe
   `Application startup complete`. Later starts load the graphs from the compile cache in a few minutes.
 - **Other checkpoints:** use `-CustomVoice` or `-Base` in place of `-VoiceDesign`. The same YAML works for all three.
 
-**Highest throughput: LNC=1, two independent servers.**
+**Highest throughput: LNC=1, two independent servers, 80 requests per talker core.**
 - At LNC=1 the device exposes 8 half-size NeuronCores. A talker step takes about as long on a half-size core as on a
   full one, so splitting the device doubles talker capacity.
 - Run two servers, each with 2 talker cores + 2 code2wav cores, and put a load balancer in front of them:
 
 ```bash
 export NEURON_LOGICAL_NC_CONFIG=1
-QTTS_B=48 QTTS_REP0=2 QTTS_DEV0=0,2 QTTS_REP1=2 QTTS_DEV1=1,3 QTTS_B1=96 \
+QTTS_SLOT_LEN=1024 QTTS_B=80 QTTS_REP0=2 QTTS_DEV0=0,2 QTTS_REP1=2 QTTS_DEV1=1,3 QTTS_B1=160 \
   python -m qwen3_tts_neuron.serving.make_deploy /tmp/a.yaml
-QTTS_B=48 QTTS_REP0=2 QTTS_DEV0=4,6 QTTS_REP1=2 QTTS_DEV1=5,7 QTTS_B1=96 \
+QTTS_SLOT_LEN=1024 QTTS_B=80 QTTS_REP0=2 QTTS_DEV0=4,6 QTTS_REP1=2 QTTS_DEV1=5,7 QTTS_B1=160 \
   python -m qwen3_tts_neuron.serving.make_deploy /tmp/b.yaml
 QTTS_NC_COUNT=8 python -m qwen3_tts_neuron.serving.serve_launcher serve Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
     --deploy-config /tmp/a.yaml --port 8101 --trust-remote-code --omni --init-timeout 3600 --stage-init-timeout 3600 &
@@ -114,6 +114,8 @@ QTTS_NC_COUNT=8 python -m qwen3_tts_neuron.serving.serve_launcher serve Qwen/Qwe
 ```
 
 LNC=1 graphs are compiled separately from LNC=2 ones, so the first start compiles again.
+`QTTS_SLOT_LEN=1024` limits a request to 1024 positions: the prompt plus about 80 s of audio. The smaller KV cache
+is what leaves room for 80 requests per half-size core.
 
 **Lowest latency:** `QTTS_B=1 python -m qwen3_tts_neuron.serving.make_deploy /tmp/b1.yaml` (one talker core, one
 code2wav core).
@@ -122,7 +124,8 @@ code2wav core).
 
 | Option | Meaning |
 |---|---|
-| `QTTS_B` | Requests per talker core (default 8; up to 48). |
+| `QTTS_B` | Requests per talker core (default 8; 48 at LNC=2, 80 at LNC=1 with `QTTS_SLOT_LEN=1024`). |
+| `QTTS_SLOT_LEN` | Positions per request (prompt + 12.5 per second of audio; default 2048). |
 | `QTTS_REP0` / `QTTS_DEV0` | Number of talker cores and which ones. |
 | `QTTS_REP1` / `QTTS_DEV1` | Number of code2wav cores and which ones. Each replica needs its own core. |
 | `QTTS_B1` | code2wav concurrency. |
