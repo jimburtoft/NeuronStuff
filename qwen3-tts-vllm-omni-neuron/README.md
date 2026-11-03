@@ -46,8 +46,8 @@ Throughput is seconds of audio generated per second.
 | **2 servers, LNC=1** | **400 (200 each)** | **367-373x** | **4.2-4.3 s** | 1.0 s |
 | 2 servers, LNC=1 | 600 (300 each) | 349x | 6.3 s | -- |
 
-- **Lowest single-request latency:** a server with a batch size of 1 takes 0.72 s for a ~4 s utterance; streaming
-  first audio arrives in 41 ms.
+- **Lowest single-request latency:** a server with a batch size of 1 takes 0.58 s for a ~4 s utterance; streaming
+  first audio arrives in 38 ms.
 - **Quality:** on a 100-prompt VoiceDesign set in six languages, Whisper large-v3 transcripts give 0.5-1.2 % WER/CER
   (sampled, varies run to run). The official `qwen_tts` reference package gives 3.15 % on the same set. Run in fp32 on
   CPU, the Neuron implementation reproduces the reference package's tokens exactly.
