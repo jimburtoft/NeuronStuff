@@ -46,6 +46,9 @@ Throughput is seconds of audio generated per second.
 | **2 servers, LNC=1** | **400 (200 each)** | **367-373x** | **4.2-4.3 s** | 1.0 s |
 | 2 servers, LNC=1 | 600 (300 each) | 349x | 6.3 s | -- |
 
+- **Sizing by latency** (2 servers at LNC=1, random arrivals at a fixed rate): up to about 80 requests/s (341x real
+  time) first audio stays under 400 ms at p99 and request latency under 5.3 s at p90. The instance saturates at about
+  85 requests/s (~385x); beyond that requests queue.
 - **Lowest single-request latency:** a server with a batch size of 1 takes 0.58 s for a ~4 s utterance; streaming
   first audio arrives in 38 ms.
 - **Quality:** on a 100-prompt VoiceDesign set in six languages, Whisper large-v3 transcripts give 0.5-1.2 % WER/CER
@@ -163,6 +166,8 @@ VLLM_PLUGINS=none vllm bench serve --omni --host 127.0.0.1 --port 8000 \
 
 ## Notes
 
+- **Request length:** with `QTTS_SLOT_LEN=1024` a request is capped at its prompt plus about 80 s of audio (the
+  LNC=1 recipe); it ends cleanly at the cap. The LNC=2 default (2048) allows about 2.5 minutes.
 - **Long text:** split it into sentences or paragraphs. Prompts above about 1,000 characters of English are rejected
   (the server answers "did not produce audio"). The checkpoint itself degrades on very long single utterances.
 - **Base voice cloning:** the speaker and speech-tokenizer encoders run on the host CPU, once per new reference clip
