@@ -3,14 +3,14 @@
 Serve [`google/gemma-3-12b-it`](https://huggingface.co/google/gemma-3-12b-it) (text in, text out) on one
 `trn2.3xlarge` with vLLM, on the public **Neuron SDK 2.33 DLAMI**
 (`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`). Every command below was run as written
-on a `trn2.3xlarge` starting from the stock DLAMI environment on 2026-10-30/31.
+on a `trn2.3xlarge` starting from the stock DLAMI environment on 2026-11-03/04 (see [Changelog](#changelog)).
 
 The DLAMI's stock vllm-neuron does not support Gemma 3. This guide installs two public branches on top of
 the DLAMI's vLLM environment:
 
 | Branch | What it is |
 |---|---|
-| [`jimburtoft/vllm-neuron@gemma3-trn2-perf-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/gemma3-trn2-perf-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus the Gemma 3 text decoder, sliding-window-aware KV admission, a sliding-window KV ring, and an argmax fix for large batches |
+| [`jimburtoft/vllm-neuron@gemma3-trn2-perf-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/gemma3-trn2-perf-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus the Gemma 3 text decoder, sliding-window-aware KV admission, a sliding-window KV ring, an argmax fix for large batches, and a decode-mask fix for odd batch sizes |
 | [`jimburtoft/nki-library@gemma3-trn2-perf-2.33`](https://github.com/jimburtoft/nki-library/tree/gemma3-trn2-perf-2.33) | NKI Library 2.33 plus `head_dim` 256 support in the fused decode attention kernel (in-kernel output projection and KV write). See [`GEMMA3_TRN2_PATCHES.md`](https://github.com/jimburtoft/nki-library/blob/gemma3-trn2-perf-2.33/GEMMA3_TRN2_PATCHES.md) |
 
 **Install both.** The model also runs with the DLAMI's own NKI Library, but slower: in our earlier tests the NKI Library branch added about 9 % throughput (not re-measured for this guide).
@@ -20,8 +20,8 @@ weights and KV cache, no speculative decoding (details in [Results](#results)):
 
 | Workload | Output tokens/s (offline, one device) |
 |---|---:|
-| 2,048-token prompts, up to 2,048 output tokens, 83 requests at once | **1,838** |
-| 4,096-token prompts, up to 4,096 output tokens, 63 requests at once | **1,418** |
+| 2,048-token prompts, up to 2,048 output tokens, 83 requests at once | **1,826** |
+| 4,096-token prompts, up to 4,096 output tokens, 63 requests at once | **1,416** |
 
 ---
 
@@ -105,7 +105,7 @@ Versions in the environment after the install:
 | Component | Version |
 |---|---|
 | vllm | `0.29.0` |
-| vllm-neuron | `0.29.0.1.2.0` (branch `gemma3-trn2-perf-0.29` @ `1ff31a9`) |
+| vllm-neuron | `0.29.0.1.2.0` (branch `gemma3-trn2-perf-0.29` @ `48d3630`) |
 | NKI Library | branch `gemma3-trn2-perf-2.33` @ `84e6346` |
 | nki | `0.7.0` |
 | neuronx-cc | `2.28.7631.0` |
@@ -213,14 +213,18 @@ bash tools/gemma3/run.sh offline-4k     # writes out/target_wiki_4096.json
 CONC="16 32 56 83" bash tools/gemma3/run.sh online-2k   # vllm serve + streaming client
 ```
 
-`run.sh` sets the environment from section 4. Each offline run compiles its own graphs on first use, then runs the 8
-prompts once (the accuracy rows), then times 3 windows of 83 (or 63) requests submitted at once.
+`run.sh` sets the environment from section 4. Each offline run compiles its own graphs on first use. It then runs one
+correctness window of 83 (or 63) requests (the 8 prompts, cycled) and times 3 more windows of the same size, all submitted
+at once. The accuracy rows come from the correctness window, so they are decoded with the same batch size and compiled
+graph as the timed windows. Every request in every window is compared with the accuracy row of its prompt: the
+`CORRECTNESS` line and each `POINT` line print `match_gated_rows`. Any copy that differs is written to
+`out/target_wiki_<N>.json.variants.json`, which `fp32_gate.py` also accepts.
 
 ---
 
 ## Results
 
-trn2.3xlarge, SDK 2.33 DLAMI, branches as above, TP=4, LNC=2, BF16, greedy, prefix caching off, 2026-10-31.
+trn2.3xlarge, SDK 2.33 DLAMI, branches as above, TP=4, LNC=2, BF16, greedy, prefix caching off, 2026-11-03/04.
 Workload: 8 English Wikipedia articles (Anarchism, Albedo, Alabama, Achilles, Abraham Lincoln, Aristotle,
 Academy Awards, Altruism), each in the chat template with the system prompt "Translate the text below to
 Hindi." and cut to exactly 2,048 or 4,096 prompt tokens. Output stops at end of sequence or at the cap; in
@@ -230,11 +234,8 @@ every run all requests ran to the cap.
 
 | Workload | `--max-num-seqs` | Output tokens/s, 3 timed windows | Median |
 |---|---:|---|---:|
-| 2,048-token prompts, up to 2,048 output tokens (`run.sh offline-2k`) | 83 | 1,836.5 / 1,840.5 / 1,838.4 | **1,838.4** |
-| 4,096-token prompts, up to 4,096 output tokens (`run.sh offline-4k`) | 63 | 1,411.8 / 1,418.2 / 1,418.8 | **1,418.2** |
-
-First start (compile + warm-up): about 105 minutes for each configuration on a trn2.3xlarge (12 vCPUs). Later
-starts load from the compile cache.
+| 2,048-token prompts, up to 2,048 output tokens (`run.sh offline-2k`) | 83 | 1,826.3 / 1,825.4 / 1,825.8 | **1,825.8** |
+| 4,096-token prompts, up to 4,096 output tokens (`run.sh offline-4k`) | 63 | 1,416.2 / 1,415.6 / 1,415.6 | **1,415.6** |
 
 ### Served (`vllm serve`, streaming `/v1/completions`, token-ID prompts, 2 waves per level)
 
@@ -242,17 +243,17 @@ starts load from the compile cache.
 
 | Concurrent requests | Output tokens/s | Time to first token p50 / p95 | Time per output token p50 |
 |---:|---:|---|---:|
-| 16 | 724.7 | 1.29 s / 2.16 s | 21.5 ms |
-| 32 | 1,200.0 | 2.44 s / 4.43 s | 25.6 ms |
-| 56 | 1,450.3 | 4.13 s / 7.56 s | 36.7 ms |
-| 83 | 1,835.2 | 5.91 s / 11.26 s | 42.3 ms |
+| 16 | 723.8 | 1.29 s / 2.15 s | 21.6 ms |
+| 32 | 1,199.6 | 2.42 s / 4.40 s | 25.6 ms |
+| 56 | 1,450.7 | 4.11 s / 7.57 s | 36.7 ms |
+| 83 | 1,822.3 | 5.97 s / 11.25 s | 42.6 ms |
 
 Time to first token rises quickly with concurrency. The server runs one 2,048-token prefill per step, so a burst
 of requests waits for the prefills ahead of it. For lower time to first token, run fewer concurrent requests per server.
 
 ### Accuracy
 
-The 8 greedy outputs of each offline run are compared token by token with an fp32 reference (Hugging Face
+The accuracy rows of each offline run (one per prompt, taken from the correctness window of 83 or 63 requests) are compared token by token with an fp32 reference (Hugging Face
 transformers, float32, eager attention, CPU, same prompts). BF16 outputs eventually diverge from fp32 at a position
 where the top two tokens are nearly tied. For each prompt, the first divergent position is fed to the fp32 model,
 and the run passes if, at every prompt's first divergence, the fp32 logit gap between the two tokens is below 0.35,
@@ -261,10 +262,11 @@ spread seen across recompiles of one unchanged BF16 configuration (max 0.277).
 
 | Run | Pass | Largest fp32 gap at a first divergence | First divergent position, prompts 0-7 |
 |---|---|---:|---|
-| 2,048 | **yes**, 8/8 | 0.188 | 94, 179, 491, 343, 37, 104, 325, 179 |
-| 4,096 | **yes**, 8/8 | 0.143 | 95, 1360, 128, 361, 5, 137, 467, 63 |
+| 2,048 | **yes**, 8/8 | 0.218 | 94, 179, 516, 38, 683, 365, 1245, 299 |
+| 4,096 | **yes**, 8/8 | 0.131 | 380, 1063, 128, 33, 647, 477, 467, 63 |
 
-These were checked with `fp32_gate.py` on a `c7i.12xlarge`.
+In both runs every request of every window (4 x 83 and 4 x 63) produced exactly its prompt's accuracy row, so these results cover
+all timed requests. The gates were run with `fp32_gate.py` on a `c7i.12xlarge`.
 
 The outputs are fluent Hindi translations that start with a one-line English preamble. The script is
 `tools/gemma3/fp32_gate.py`. It needs about 50 GB of RAM, so run it on a CPU instance (we used `c7i.12xlarge`):
@@ -300,6 +302,16 @@ python tools/gemma3/fp32_gate.py tools/gemma3/data/ref_fp32_wiki_2048.json out/t
 | `posix_spawn failed: No such file or directory` at the first compile | `source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate` instead of calling its `python` directly |
 | `neuronx-cc was forcibly killed` / compile dies | Add the swap file |
 | Far fewer running requests than `--max-num-seqs` | The `VLLM_NEURON_SWA_*` variables are not set in the server's shell |
+
+## Changelog
+
+- **2026-11-03/04:** The vllm-neuron branch fixes the decode attention mask for odd decode batch sizes (such as 83 and 63)
+  with 2 KV heads per core. The mask was built for a different layout from the one the decode kernel uses, so requests
+  at those batch sizes attended to the wrong KV positions. The numbers in earlier versions of this guide (offline 1,838 / 1,418 and the
+  online table) came from a build with this issue. Their accuracy check ran only 8 requests, which used an even decode batch
+  that did not hit it. The benchmark now takes its accuracy rows from a full window of 83 / 63 requests and checks every timed
+  request. All numbers above were re-measured with the fix (vllm-neuron `48d3630`, NKI Library `84e6346`).
+- 2026-10-30/31: first version.
 
 ## References
 
