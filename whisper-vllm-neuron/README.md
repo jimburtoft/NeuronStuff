@@ -6,14 +6,16 @@ Neuron SDK 2.33 DLAMI plus the Whisper model from our vllm-neuron branch
 [`jimburtoft/vllm-neuron` `whisper/0.29-public`](https://github.com/jimburtoft/vllm-neuron/tree/whisper/0.29-public).
 
 - **Model:** `openai/whisper-large-v3`, BF16. Native vllm-neuron model (no NxD Inference).
-- **Optional draft for speculative decoding:** [`distil-whisper/distil-large-v3`](https://huggingface.co/distil-whisper/distil-large-v3)
-  (2 decoder layers, the same encoder as large-v3).
+- **Optional drafts for speculative decoding:** [`distil-whisper/distil-large-v3`](https://huggingface.co/distil-whisper/distil-large-v3)
+  (2 decoder layers, the same encoder as large-v3), or the DFlash block draft
+  [`jburtoft/whisper-large-v3-DFlash`](https://huggingface.co/jburtoft/whisper-large-v3-DFlash) (proposes 15 tokens in one
+  pass; lowest single-request latency; training code [jimburtoft/whisper-dflash](https://github.com/jimburtoft/whisper-dflash)).
 - **Configs:** one for throughput (8 replicas, one per NeuronCore), one for single-request latency (tensor parallel 4),
   each with and without speculative decoding.
 
 Why the extra steps: vllm-neuron 0.29.0.1.2.0, the version in the SDK 2.33 DLAMI, has no Whisper model.
 The branch is the public `v0.29.0.1.2.0` release plus the Whisper model, two NKI decode kernels (cross-attention and
-self-attention over a per-request KV cache), greedy draft-model speculative decoding for Whisper, and these framework
+self-attention over a per-request KV cache), greedy draft-model and DFlash speculative decoding for Whisper, and these framework
 fixes that Whisper needs:
 
 | Fix | What it does |
@@ -41,6 +43,7 @@ RTFx = seconds of audio transcribed per second of wall time.
 | `tput-spec` | `tput` + speculative decoding (K=4), 16 requests per replica | 1,275 RTFx on 30 s clips; lower latency below the knee (E2E p50 559 ms vs 828 ms at concurrency 16) |
 | `lat` | One request at a time, TP4 (LNC=2) | **256 ms** mean over the 18 clips (p50 197, p90 487) |
 | `lat-spec` | `lat` + speculative decoding (K=10, async) | **98.6 ms** mean (p50 86, p90 156); 8.8 tokens per verify step (7.8 accepted draft tokens + 1) |
+| `lat-dflash` | `lat` + DFlash speculative decoding (block 16, async) | **89.6 ms** mean (p50 72, p90 140); 7.1 tokens per verify step. Same session: `lat` 249.9 ms, `lat-spec` 95.3 ms |
 | `tput-fp8` (option) | `tput` + FP8 (e4m3) cross-attention KV cache, 36 requests per replica. **Precision change.** | 1,417 / 558 RTFx |
 
 Accuracy (WER %, open_asr_leaderboard normalizer, `tput` config):
@@ -54,6 +57,10 @@ Accuracy (WER %, open_asr_leaderboard normalizer, `tput` config):
 - Under load (the 18 clips x 4 at concurrency 128), every transcript is the same as at one request at a time.
 - With speculative decoding, the 18 clips give the same tokens as without it. On larger sets, a few near-ties
   flip (about 1 in 15 Earnings22 chunks); WER does not change.
+- `lat-dflash` WER (full sets): Earnings22 8.65, LibriSpeech test-clean 1.47, test-other 3.13 (the `lat` server: 8.52 / 1.47 /
+  3.12; `lat-spec`: 8.65 / 1.47 / 3.12). DFlash accepts the most tokens on LibriSpeech (about 9 per verify step on test-clean)
+  and the fewest on Earnings22 chunks (about 4.5). It is a latency option: in the 8-replica throughput layout it runs
+  but is slower than `tput` (530 vs 1,256 RTFx at concurrency 256), so use `tput` or `tput-spec` there.
 
 ## 1. Launch an instance
 
@@ -82,7 +89,7 @@ sudo fallocate -l 96G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap --f
 source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/activate   # vllm 0.29.0, vllm-neuron 0.29.0.1.2.0
 
 git clone https://github.com/jimburtoft/vllm-neuron.git -b whisper/0.29-public ~/vllm-neuron
-git -C ~/vllm-neuron checkout f95e5739b1
+git -C ~/vllm-neuron checkout aa283ad906
 pip install --no-deps --no-build-isolation -e ~/vllm-neuron      # replaces the shipped plugin; nothing else changes
 
 # vLLM's "audio" extra is not in the DLAMI venv. Without it every transcription request returns HTTP 400.
@@ -174,6 +181,13 @@ vllm serve openai/whisper-large-v3 --served-model-name whisper \
 ```
 Keep `num_speculative_tokens` below the smallest `num_batched_tokens_buckets` value minus 1 (16 here, so at most 14).
 
+**DFlash speculative decoding (`lat-dflash`):** add, instead of the `draft_model` config,
+```bash
+  --speculative-config '{"method": "dflash", "model": "jburtoft/whisper-large-v3-DFlash", "num_speculative_tokens": 15}'
+```
+`num_speculative_tokens` must be 15 (the draft's block size 16 minus 1); a verify step is 16 tokens, which the 16-token bucket
+covers. The draft also attends to the encoder output (its "audio context"), computed once per request after the encoder.
+
 ## 5. Transcribe
 
 ```bash
@@ -236,7 +250,9 @@ for d in earnings22 libri-clean libri-other; do python scripts/wer_public.py 800
 ## Notes
 
 - **Software:** Neuron SDK 2.33 DLAMI (`20261020`): vllm 0.29.0, torch / torch-xla 2.13.0, neuronx-cc 2.28.7631.0,
-  nki 0.7.0; branch `whisper/0.29-public` @ `f95e5739b1` on top of vllm-neuron `v0.29.0.1.2.0`.
+  nki 0.7.0; branch `whisper/0.29-public` @ `aa283ad906` on top of vllm-neuron `v0.29.0.1.2.0` (the `tput`, `lat` and
+  `lat-spec` numbers were measured at `f95e5739b1`; `aa283ad906` adds DFlash only, and `lat` / `lat-spec` were re-measured on it
+  with the same results within run-to-run noise).
 - **`max_model_len 448`** is Whisper's decoder limit. The prompt is 4 tokens, so a request can produce up to 444 tokens.
 - **Throughput layout:** TP1 x DP8 at LNC=1 is the fastest layout on one trn2.3xlarge. The other layouts we measured
   (TP2 x DP4 and TP4 x DP2 at LNC=1; TP1 x DP4, TP2 x DP2 and TP4 at LNC=2) are 7-55 % slower.
