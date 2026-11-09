@@ -3,7 +3,7 @@
 Serve [`JetBrains/Mellum2.1-12B-A2.5B-Thinking`](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking)
 (a 12B mixture-of-experts reasoning model with 2.5B active parameters) on one `trn2.3xlarge` with vLLM, on the
 public **Neuron SDK 2.33 DLAMI** (`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`). Every command
-below was run as written on a `trn2.3xlarge`, starting from the stock DLAMI environment, on 2026-11-03 (numbers refreshed the same day after the decode optimization).
+below was run as written on a `trn2.3xlarge`, starting from the stock DLAMI environment, on 2026-11-09.
 
 The DLAMI's stock vllm-neuron does not support Mellum. This guide installs one public branch on top of the
 DLAMI's vLLM environment:
@@ -17,14 +17,13 @@ The DLAMI's own NKI Library is used as is.
 Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no speculative decoding (details in
 [Results](#results)):
 
-| Workload | Output tokens/s (one device) |
+| Workload | Result (one device) |
 |---|---:|
-| Offline, 64 requests at once, ~70-token prompts, 1,024 output tokens | **2,728** |
-| Offline, 64 requests at once, 4,096 output tokens | **2,067** |
-| Online (`vllm bench serve`), 32 concurrent requests, 1,024 in / 1,024 out | **1,451** (TPOT 19.3 ms) |
-| Online, 64 concurrent, 1,024 in / 4,096 out | **1,979** (TPOT 31.0 ms) |
-| One request (offline or online) | **103** (9.7 ms per token) |
-| One request with a 45,056-token prompt | 57.9 (TTFT 6.9 s, TPOT 10.5 ms) |
+| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [High concurrency](#high-concurrency)) | **3,994** output tok/s |
+| Online, 256 concurrent, 1,024 in / 1,024 out | **2,985** output tok/s (TPOT 80 ms) |
+| Online, 64 concurrent, 1,024 in / 1,024 out | **1,866** output tok/s (TPOT 32 ms) |
+| One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
+| One request with a 30,000-token prompt | time to first token 1.95 s, 10.3 ms per token |
 
 ---
 
@@ -103,7 +102,7 @@ Versions in the environment after the install:
 | Component | Version |
 |---|---|
 | vllm | `0.29.0` |
-| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `ebaa927`) |
+| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `bf623f7` or later) |
 | transformers | `5.17.0` (has `MellumConfig`) |
 | nki | `0.7.0` |
 | neuronx-cc | `2.28.7631.0` |
@@ -181,11 +180,30 @@ What the settings do:
 | Setting | Why |
 |---|---|
 | `--tensor-parallel-size 4` | Uses all 4 cores of the device (8 query heads and 1 KV head per core). |
-| `--enable-expert-parallel` | 16 of the 64 experts per core, at full width. This is faster than splitting every expert 4 ways, and lets the prefill expert kernel run. |
+| `--enable-expert-parallel` | 16 of the 64 experts per core, at full width; prefill then runs only the expert blocks that hold tokens (nkilib `shard_on_i_hybrid`). This is faster than splitting every expert 4 ways, and lets the prefill expert kernel run. |
 | `VLLM_NEURON_SWA_ALIGN_TOKENS=1024` (in `env.sh`) | 21 of the 28 layers use a 1,024-token sliding window. The decode attention kernel needs that window's block table to be a multiple of 256 tokens at LNC=2. |
 | `VLLM_NEURON_SWA_RING=1`, `VLLM_NEURON_SWA_REAL_ADMISSION=1`, `VLLM_NEURON_SWA_EARLY_FREE=1` (in `env.sh`) | Sliding-window layers keep a fixed ring of window blocks per request, and requests are admitted by their real KV peak instead of a full-attention worst case. The ring needs single-shot prefill (`--max-num-batched-tokens` >= `--max-model-len`) and no prefix caching. |
 | `--max-model-len 8192` | Prompt plus output. Mellum2.1 thinks before it answers (GSM8K-style questions: ~550 tokens on average, a few thousand for hard ones). Raise it for long agentic contexts. |
 | `--reasoning-parser qwen3` | Splits `<think>...</think>` into `reasoning`. |
+
+### High concurrency
+
+For many short requests, pack several prompts into one prefill step and give the KV cache more of the HBM:
+
+```bash
+export VLLM_NEURON_MAX_PREFILLS_PER_BATCH=8          # up to 8 waiting prompts per prefill step
+export VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION=0.42   # KV budget per core: 9.3 GiB instead of 6.6 GiB
+vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking --tensor-parallel-size 4 --enable-expert-parallel \
+  --max-model-len 8192 --max-num-seqs 512 --max-num-batched-tokens 8192 --no-enable-prefix-caching \
+  --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes
+```
+
+- Packing needs whole-prompt prefill: keep `--max-num-batched-tokens` equal to `--max-model-len` and prefix caching
+  off (the model refuses other combinations). It cuts time to first token for short prompts at 64+ concurrent
+  requests by 2-4x.
+- With the default KV budget about 256 requests of 1k / 1k fit at once; more requests wait in the queue.
+- A KV fraction above about 0.45 does not fit in HBM next to the decode graphs (`NCC_EOOM002` at compile time
+  or `Allocation Failure` at load), and neither does `--max-num-seqs 1024`.
 
 ### Long prompts (up to ~48k tokens)
 
@@ -277,50 +295,42 @@ vllm bench serve --model JetBrains/Mellum2.1-12B-A2.5B-Thinking --dataset-name r
 ## Results
 
 One trn2.3xlarge (one Trainium2 device), TP=4, expert parallel 4, LNC=2, BF16 weights and KV cache, greedy,
-SDK 2.33 DLAMI, vllm-neuron branch `mellum-trn2-0.29` @ `6c4b7ce`. Throughput numbers are the second of two
-runs after warm-up.
+SDK 2.33 DLAMI, vllm-neuron branch `mellum-trn2-0.29` @ `bf623f7`. `vllm bench serve`, random prompts, EOS ignored,
+`--max-model-len 8192`, prefix caching off, one prompt per prefill step unless noted.
 
-| Offline (`bench.py`, ~70-token GSM8K prompts, EOS ignored) | Output tok/s |
-|---|---:|
-| 1 request, 1,024 output tokens | 102.8 |
-| 32 requests at once, 1,024 output tokens | 1,818 |
-| 64 requests at once, 1,024 output tokens | 2,728 |
-| 128 requests at once, 1,024 output tokens | 2,683 |
-| 64 requests at once, 4,096 output tokens (`--max-model-len 4608`) | 2,067 |
+| Single request | Time to first token | Time per output token |
+|---|---:|---:|
+| 1,024-token prompt | 80 ms | 9.7 ms |
+| 4,096-token prompt | 207 ms | 9.7 ms |
+| 16,384-token prompt (segmented prefill) | 951 ms | 10.3 ms |
+| 30,000-token prompt (segmented prefill) | 1,953 ms | 10.3 ms |
 
-| Online (`vllm bench serve`, random 1,024 in / 1,024 out, 64 prompts) | |
-|---|---:|
-| Concurrency 32: output tok/s | 1,451 |
-| Median TTFT | 2,859 ms |
-| Median / P99 TPOT | 19.3 / 21.9 ms |
+| Online | Concurrency | Output tok/s | TTFT p50 (ms) | TPOT p50 (ms) |
+|---|---:|---:|---:|---:|
+| 1,024 in / 1,024 out | 16 | 999 | 629 | 15.4 |
+| 1,024 / 1,024 | 64 | 1,866 | 2,318 | 32.1 |
+| 4,096 / 1,024 | 16 | 896 | 1,628 | 16.3 |
+| 4,096 / 1,024 | 64 | 1,536 | 6,164 | 35.7 |
+| 1,024 / 4,096 | 64 | 2,069 | 2,307 | 30.4 |
+| 128 / 1,024, 8 prompts per prefill step | 64 | 2,097 | 417 | 30.2 |
+| 128 / 1,024, 8 per step | 256 | 3,333 | 1,411 | 75.5 |
+| 128 / 1,024, 8 per step, KV 0.42, `--max-num-seqs 512` | 512 | 3,994 | 2,664 | 125.6 |
+| 1,024 / 1,024, 8 per step | 256 | 2,985 | 6,230 | 79.7 |
+| 1,024 / 1,024, 8 per step, KV 0.42, `--max-num-seqs 512` | 512 | 3,483 | 12,095 | 135.3 |
 
-Without `--enable-expert-parallel` (every core holds all 64 experts at 1/4 width), one request decodes faster
-(163.8 tok/s: each token reads 8 expert slices at 1/4 width instead of 8 whole experts on whichever cores own them),
-and batch 64 is about the same (2,822 tok/s), but batch 32 drops to 470-666 tok/s and online with 1,024-token
-prompts to 639 tok/s (TPOT 49 ms). Use expert parallelism unless you serve one request at a time.
-
-| Online matrix (`vllm bench serve`, random prompts, EOS ignored, `--max-model-len 8192`) | Output tok/s | TTFT p50 (ms) | TPOT p50 / p99 (ms) |
+| Long context (`VLLM_NEURON_SWA_RING=0`, `--max-model-len 32768 --max-num-batched-tokens 4096`, 1,024 out) | Output tok/s | TTFT p50 | TPOT p50 |
 |---|---:|---:|---:|
-| 128 in / 1,024 out, concurrency 1 / 16 / 64 | 103 / 996 / 1,859 | 82 / 659 / 2,471 | 9.7 / 15.4 / 32.0 (p99 34.3) |
-| 1,024 / 1,024, concurrency 1 / 16 / 64 | 102 / 910 / 1,581 | 184 / 1,493 / 5,638 | 9.7 / 16.1 / 35.0 (p99 40.3) |
-| 4,096 / 1,024, concurrency 1 / 16 / 64 | 98 / 698 / 1,034 | 534 / 4,400 / 16,780 | 9.7 / 18.6 / 45.5 (p99 61.2) |
-| 1,024 / 4,096, concurrency 1 / 16 / 64 | 103 / 1,030 / 1,979 | 183 / 1,487 / 5,646 | 9.7 / 15.2 / 31.0 (p99 32.3) |
-
-| Long context (segmented prefill, settings above, 1,024 out) | Output tok/s | TTFT p50 | TPOT p50 |
-|---|---:|---:|---:|
-| 16,384-token prompt, 1 / 4 concurrent | 77.4 / 167.6 | 2.4 / 5.9 s | 10.6 / 18.1 ms |
-| 32,768-token prompt, 1 / 4 concurrent | 65.2 / 119.1 | 4.9 / 12.2 s | 10.6 / 21.7 ms |
-| 45,056-token prompt, 1 / 4 concurrent | 57.9 / 97.1 | 6.9 / 17.1 s | 10.5 / 24.6 ms |
+| 8,192-token prompt, 1 / 4 / 16 concurrent | 93 / 251 / 644 | 0.48 / 1.12 / 3.72 s | 10.3 / 14.8 / 21.2 ms |
+| 16,384-token prompt, 1 / 4 concurrent | 89 / 225 | 0.95 / 2.30 s | 10.3 / 15.5 ms |
+| 30,000-token prompt, 1 concurrent | 82 | 1.95 s | 10.3 ms |
 
 Decode barely slows with context because 21 of the 28 layers only read a 1,024-token window.
 
 | Accuracy | |
 |---|---|
-| fp32 first-divergence gate (7 prompts) | PASS, max gap 0.346 |
+| fp32 first-divergence gate (7 prompts), whole-prompt and segmented prefill | PASS, max gap 0.229 |
 | fp32 gate, 20,549- and 40,232-token prompts | PASS, max gap 0.154 |
-| GSM8K, 100 questions | 97 % |
-
----
+| GSM8K, 100 questions | 98 % |
 
 ## Notes
 
@@ -330,7 +340,8 @@ Decode barely slows with context because 21 of the 28 layers only read a 1,024-t
   plugin has no Mellum model. The branch uses transformers' `MellumConfig` and adds the model.
 - **MoE.** The router runs in fp32 (softmax over 64 experts, top 8, renormalized). In decode, only the routed
   experts' weights are read while that is fewer than the experts on the core, then every local expert once.
-  Decode is limited by reading expert weights from HBM. Prefill uses the NKI Library's blockwise expert kernel.
+  Decode is limited by reading expert weights from HBM. Prefill uses the NKI Library's `shard_on_i_hybrid`
+  expert kernel, which runs only the expert blocks that hold tokens.
   The experts' hidden size (2,304) is zero-padded to 2,560 for that kernel (it works in tiles of 512); decode
   reads only the real 2,304 rows (+38 % throughput at batch 64).
 - **RoPE.** Sliding-window layers use plain RoPE. The 7 full-attention layers use YaRN (factor 16 over an 8,192
