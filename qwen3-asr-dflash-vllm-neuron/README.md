@@ -19,12 +19,12 @@ The full walkthrough — cloning the fork on top of the public SDK 2.33 / vLLM 0
 async reorder / block-KV-write options, long audio, other languages, `stream=true`, Qwen3-ASR-0.6B,
 and the DFlash speculative-decoding section — is in the fork's own README:
 
-**https://github.com/jimburtoft/vllm-neuron/blob/qwen3-asr/0.29-champion-spec/QWEN3_ASR_FIXES.md**
+**https://github.com/jimburtoft/vllm-neuron/blob/qwen3-asr/0.29-champion/QWEN3_ASR_FIXES.md**
 
 Clone the two public forks and set up the stack:
 
 ```bash
-git clone -b qwen3-asr/0.29-champion-spec https://github.com/jimburtoft/vllm-neuron.git
+git clone -b qwen3-asr/0.29-champion https://github.com/jimburtoft/vllm-neuron.git
 git clone -b qwen3-asr/2.33-champion https://github.com/jimburtoft/nki-library.git
 source vllm-neuron/qwen3_asr/setup_champion.sh $PWD/nki-library
 ```
