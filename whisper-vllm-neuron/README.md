@@ -30,6 +30,31 @@ fixes that Whisper needs:
 You install the branch into the DLAMI vLLM environment in place of the shipped plugin; nothing else in the
 environment changes.
 
+> **Newer vllm-neuron (vLLM 0.32 and later): the variables have new names.** This guide uses the public 0.29 branch, which
+> reads the `WHISPER_*` names below. The Whisper model in newer vllm-neuron (the 0.32 line) reads the same settings as
+> `VLLM_NEURON_WHISPER_*` and does not read the old names. The values do not change.
+>
+> | 0.29 branch (this guide) | vLLM 0.32 and later |
+> |---|---|
+> | `WHISPER_FUSED_DECODE` | `VLLM_NEURON_WHISPER_FUSED_DECODE` |
+> | `WHISPER_FUSED_DECODE_MAX_B` | `VLLM_NEURON_WHISPER_FUSED_DECODE_MAX_B` |
+> | `WHISPER_ENCODER_FLASH` | `VLLM_NEURON_WHISPER_ENCODER_FLASH` |
+> | `WHISPER_SELF_KV` | `VLLM_NEURON_WHISPER_SELF_KV` |
+> | `WHISPER_SLOT_CTX` | `VLLM_NEURON_WHISPER_SLOT_CTX` |
+> | `WHISPER_SELF_ATTN` | `VLLM_NEURON_WHISPER_SELF_ATTN` |
+> | `WHISPER_CROSS_MODE` | `VLLM_NEURON_WHISPER_CROSS_MODE` (`mask`, `kernel`, `mqa`, `xkernel`) |
+> | `WHISPER_CROSS_KV_FUSED` | `VLLM_NEURON_WHISPER_CROSS_KV_FUSED` |
+> | `WHISPER_CROSS_FP8` | `VLLM_NEURON_WHISPER_CROSS_FP8` |
+> | `WHISPER_IN_OUT` | `VLLM_NEURON_WHISPER_IN_OUT` |
+> | `WHISPER_LM_HEAD` | `VLLM_NEURON_WHISPER_LM_HEAD` (`fp32`, `bf16w`) |
+> | `WHISPER_XKERNEL_DMA` | `VLLM_NEURON_WHISPER_XKERNEL_DMA` |
+> | `WHISPER_DFLASH_LM` | `VLLM_NEURON_WHISPER_DFLASH_LM` |
+>
+> The experimental settings of the 0.29 branch (`WHISPER_CROSS_KT`, `WHISPER_CROSS_BLOCK`, `WHISPER_CROSS_ACTIVE`,
+> `WHISPER_CROSS_MQA_GROUP`, `WHISPER_CROSS_MQA_PAD`, `WHISPER_GELU`, `WHISPER_ENCODER_NF`, `WHISPER_FP8`,
+> `WHISPER_SELF_WRITE`, `WHISPER_SPEC_ROWS`, the `WHISPER_*_OPT_LEVEL` pair and `WHISPER_DFLASH_TIMING`) are not in
+> 0.32: it uses their measured defaults. None of the configs below sets them.
+
 ## Results (one trn2.3xlarge = one Trainium2 device)
 
 Public data only: Earnings22 ([`ArtificialAnalysis/Earnings22-Cleaned-AA`](https://huggingface.co/datasets/ArtificialAnalysis/Earnings22-Cleaned-AA),
@@ -256,5 +281,5 @@ for d in earnings22 libri-clean libri-other; do python scripts/wer_public.py 800
 - **`max_model_len 448`** is Whisper's decoder limit. The prompt is 4 tokens, so a request can produce up to 444 tokens.
 - **Throughput layout:** TP1 x DP8 at LNC=1 is the fastest layout on one trn2.3xlarge. The other layouts we measured
   (TP2 x DP4 and TP4 x DP2 at LNC=1; TP1 x DP4, TP2 x DP2 and TP4 at LNC=2) are 7-55 % slower.
-- **FP8 decoder MLP weights** (`WHISPER_FP8=decoder_mlp`) exist on the branch but are slower; do not use them.
+- **FP8 decoder MLP weights** (`WHISPER_FP8=decoder_mlp`) exist on the 0.29 branch but are slower; do not use them (removed in 0.32).
 - **Startup:** the first request after a start can take longer while the runtime warms up; send one warm-up request.
