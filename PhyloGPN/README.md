@@ -50,7 +50,7 @@ aws ssm get-parameter --region <region> \
 ```bash
 source /opt/aws_neuronx_venv_torch_neuronx_2_14_0/bin/activate
 git clone https://github.com/jimburtoft/NeuronStuff.git
-cd NeuronStuff/phylogpn-torchneuron
+cd NeuronStuff/PhyloGPN
 python -m pip install -e package --no-deps
 ```
 
