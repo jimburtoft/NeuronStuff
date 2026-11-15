@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phylogpn-neuron"
+version = "0.1.0"
+description = "PhyloGPN (songlab/PhyloGPN) on AWS Trainium2 with TorchNeuron and a fused NKI kernel"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = ["torch", "numpy", "safetensors", "huggingface_hub"]
+
+[tool.setuptools.packages.find]
+include = ["phylogpn_neuron*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "cpu: CPU-only (no Neuron device)",
+    "simulator: NKI CPU simulator (nki.simulate)",
+    "device: needs a Trainium2 NeuronCore",
+]

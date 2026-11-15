@@ -1,0 +1,2 @@
+{"kernel": true, "L": 16384, "B": 4, "ranks": 4, "lnc": "2", "device_sites_per_s": 1727463.8, "per_rank_sites_per_s": [432141.4, 432082.9, 431865.9, 432278.5], "wall_s": 69.466, "compile_s": 188.2, "check_cos_vs_cpu_fp32": 0.999853, "check_argmax_agree": 0.99904}
+{"kernel": false, "L": 16384, "B": 4, "ranks": 4, "lnc": "2", "device_sites_per_s": 980856.9, "per_rank_sites_per_s": [245310.0, 245214.7, 245285.5, 245251.7], "wall_s": 122.342, "compile_s": 52.8}
