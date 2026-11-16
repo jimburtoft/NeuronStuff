@@ -104,6 +104,9 @@ Window size `L` (default 16,384) trades compile time for throughput: each window
 
 ## Constraints
 
+- **Inference only with the kernel.** The NKI kernel has no backward; calling `backward()` through it raises a
+  `RuntimeError` saying so. For fine-tuning, build without the kernel (`Scorer.build(kernel=False)`, or `pg.load()`
+  without `model.use_kernel()`): the stock TorchNeuron graph supports autograd.
 - bf16 on the device. The kernel path does not run in fp32. For exact fp32 results use `kernel=False` with an fp32
   model on CPU.
 - One `(L, B)` shape per `Scorer`; each new shape compiles once.

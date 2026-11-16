@@ -322,6 +322,16 @@ def prepare_block_weights(block):
 
 OPS = {}
 
+INFERENCE_ONLY_MSG = (
+    "The PhyloGPN NKI block kernel is inference-only (no backward). Run under torch.no_grad() / "
+    "torch.inference_mode(), or for training build the model without the kernel (Scorer.build(kernel=False), or "
+    "phylogpn_neuron.load() without model.use_kernel()), which uses the stock TorchNeuron graph with autograd."
+)
+
+
+def _inference_only_backward(ctx, grad_out):
+    raise RuntimeError(INFERENCE_ONLY_MSG)
+
 
 def register_torch_ops(cfg=None):
     import os
@@ -340,6 +350,8 @@ def register_torch_ops(cfg=None):
             def _op(x: torch.Tensor, w1: torch.Tensor, w2: torch.Tensor, w3: torch.Tensor,
                     vecs: torch.Tensor) -> torch.Tensor:
                 return caller(x, w1, w2, w3, vecs)
+
+            _op.register_autograd(_inference_only_backward)
             return _op
 
         OPS[d] = _mk()

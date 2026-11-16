@@ -23,3 +23,13 @@ def test_scorer_matches_cpu(kernel):
     cos = float((got * ref).sum() / np.linalg.norm(got) / np.linalg.norm(ref))
     agree = float((got.argmax(-1) == ref.argmax(-1)).mean())
     assert cos > 0.9997 and agree > 0.998, (cos, agree)
+
+
+def test_kernel_backward_raises_clear_error():
+    import torch_neuronx  # noqa: F401
+    from phylogpn_neuron.kernel import INFERENCE_ONLY_MSG
+    m = pg.load().center_().to(torch.bfloat16).to("neuron").use_kernel()
+    ids = torch.randint(0, 4, (1, 1024)).to("neuron")
+    with pytest.raises(RuntimeError) as ei:
+        m(ids)[1].float().sum().backward()
+    assert "inference-only" in str(ei.value)

@@ -89,7 +89,10 @@ class PhyloGPN(nn.Module):
         return self
 
     def use_kernel(self, cfg=None):
-        """Replace every block's forward by the fused NKI kernel (call after .to(device))."""
+        """Replace every block's forward by the fused NKI kernel (call after .to(device)).
+
+        Inference only: the kernel has no backward, and calling backward through it raises a RuntimeError.
+        Run under torch.no_grad(); for training, leave the kernel off (stock graph, full autograd)."""
         from . import kernel
         assert getattr(self, "_centred", False), "call center_() (in fp32, before casting) first"
         ops = kernel.register_torch_ops(cfg)
