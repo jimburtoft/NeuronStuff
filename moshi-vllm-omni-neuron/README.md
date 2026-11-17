@@ -29,10 +29,9 @@ Above 40 sessions the limit is the vLLM-Omni API server process on the host, not
 up with 44-48 sessions at this point).
 
 **With upcoming vLLM-Omni** (its unified full-duplex framework, pending duplex CPU fixes and the option to run the
-duplex orchestrator in its own process) and the same Neuron workers, measured on a trn2.3xlarge-equivalent (one
-Trainium2 device, 12 vCPUs): **64 PersonaPlex sessions x 4 minutes, every frame on time, latency p50 63-80 / p99
-146-158 ms**, with the API server and the orchestrator process each pinned to their own CPU core. At 64 the Trainium
-device is again the limit (68 sessions fall behind).
+duplex orchestrator in its own process) and the same Neuron workers, measured on a trn2.3xlarge: **56 PersonaPlex
+sessions x 4 minutes, every frame on time, latency p50 67-95 / p99 309-743 ms**, with the API server and the
+orchestrator process each pinned to their own CPU core.
 
 **Moshi (moshiko / moshika)**, 3000-frame window, 28.8 s conversation streamed at real-time pace:
 
