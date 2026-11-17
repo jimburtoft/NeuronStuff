@@ -241,6 +241,33 @@ Same branch, other measured configurations (from the
 | GSM8K, 1,319 questions | 59.6 % (Hugging Face transformers BF16: 60.1 %) |
 | Needle retrieval up to 30k prompt tokens | 6 / 6 |
 
+## Optional: EAGLE3 speculative decoding (lower latency at low concurrency)
+
+An open EAGLE3 draft for this model, trained on Trainium2 with openly licensed prompts:
+[`jburtoft/Mistral-7B-Instruct-v0.3-EAGLE3`](https://huggingface.co/jburtoft/Mistral-7B-Instruct-v0.3-EAGLE3)
+(training code: <https://github.com/jimburtoft/mistral-7b-eagle3>). Add one flag to the server from step 4.
+The draft compiles with the target on the first start.
+
+```bash
+vllm serve mistralai/Mistral-7B-Instruct-v0.3 --tensor-parallel-size 4 \
+  --max-model-len 2048 --max-num-batched-tokens 2048 --max-num-seqs 8 --no-enable-prefix-caching \
+  --additional-config '{"neuron_config": {"on_device_sampling_config": {"all_greedy": "true"}}}' \
+  --speculative-config '{"method": "eagle3", "model": "jburtoft/Mistral-7B-Instruct-v0.3-EAGLE3", "num_speculative_tokens": 3}'
+```
+
+Median time per output token, same server with and without the draft (held-out prompts, 256 output tokens,
+greedy):
+
+| Prompts | Concurrency 1 | Concurrency 4 | Concurrency 8 | Acceptance length |
+|---|---|---|---|---|
+| Chat (UltraChat) | 8.68 -> 4.98 ms | 10.04 -> 6.64 ms | 10.95 -> 8.87 ms | 2.53 |
+| Code (Magicoder) | 8.68 -> 4.01 ms | 10.06 -> 5.59 ms | 11.02 -> 7.33 ms | 3.07 |
+| Math (GSM8K) | 8.68 -> 4.00 ms | 10.03 -> 5.58 ms | 10.94 -> 7.42 ms | 2.98 |
+
+GSM8K is unchanged (59.5 % without, 59.7 % with the draft). `num_speculative_tokens: 3` was fastest at
+concurrency 1-8. Speculation helps latency at low concurrency; for maximum throughput at high concurrency,
+serve without it.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -258,5 +285,6 @@ Same branch, other measured configurations (from the
 
 - Model: <https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3>
 - vllm-neuron branch: <https://github.com/jimburtoft/vllm-neuron/tree/mistral-trn2-0.29>
+- EAGLE3 draft: <https://huggingface.co/jburtoft/Mistral-7B-Instruct-v0.3-EAGLE3>, code <https://github.com/jimburtoft/mistral-7b-eagle3>
 - Model README (settings, accuracy, performance): <https://github.com/jimburtoft/vllm-neuron/blob/mistral-trn2-0.29/vllm_neuron/model/mistral/README.md>
 - vLLM Neuron documentation: <https://awsdocs-neuron.readthedocs-hosted.com/en/latest/vllm-neuron/>
