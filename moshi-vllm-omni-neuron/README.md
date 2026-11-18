@@ -36,13 +36,14 @@ instance, API server and orchestrator process each pinned to their own CPU core:
 |---|---|---|---|
 | 4 minutes | 56 | yes (2 runs) | 67-95 / 546-743 ms |
 | 4 minutes | 60 | yes | 63-79 / 140 ms |
-| 4 minutes | **64** | **yes (3 of 3 runs)** | **59-109 / 221-451 ms** |
-| 4 minutes | 68 | 1 of 3 runs | 73-99 / 244 ms when it passes |
+| 4 minutes | 64 | yes (3 of 3 runs) | 59-109 / 221-451 ms |
+| 4 minutes | **72** | **yes (3 of 3 runs)** | **53-114 / 106-777 ms** |
 
 The 60- and 64-session rows add host-side changes in our stage-0 path: per-step messages to the Neuron workers that
 no longer grow with conversation length, user audio sent as one packed tensor per step, and batched hand-off between
-stages. At 64-68 sessions the limit is per-step host work around the device step on the 12 vCPUs; the Trainium
-device itself has headroom.
+stages. The 72-session row runs PersonaPlex as a single pipeline stage (the Neuron workers decode the audio and hand
+it straight to the realtime front end; user audio as raw samples). 72 is the largest batch size compiled for these
+runs; higher counts are being measured.
 
 **Moshi (moshiko / moshika)**, 3000-frame window, 28.8 s conversation streamed at real-time pace:
 
