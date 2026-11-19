@@ -201,6 +201,35 @@ On a trn2.48xlarge, pin a server to one device with `NEURON_VISIBLE_DEVICES=0-3`
 
 ---
 
+### Optional: packed prefill for short prompts
+
+With many short prompts arriving together, set `VLLM_NEURON_MAX_PREFILLS_PER_BATCH=16` before `vllm serve`
+(same command as above). One prefill step then processes several whole prompts instead of one, up to 2,048
+tokens in total. Each prompt still attends only to itself. Longer prompts are split into chunks and run on their
+own as before. It is off unless you set the variable. The first start compiles a second prefill graph per bucket
+(about 5-10 more minutes).
+
+Measured on trn2.3xlarge with random prompts and exactly 128 output tokens per request (`vllm bench serve
+--dataset-name random --random-input-len N --random-output-len 128 --ignore-eos`), 64 concurrent requests,
+output tokens/s:
+
+| Prompt tokens | 64 | 128 | 256 | 512 | 1,024 | 2,048 | > 2,048 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Without packing | 1,298 | 1,264 | 1,211 | 1,078 | 897 | 658 | |
+| **With packing** | **2,160 (+66 %)** | **2,064 (+63 %)** | **1,844 (+52 %)** | **1,498 (+39 %)** | 1,078 (+20 %) | 692 (+5 %) | no change |
+
+- Time to first token at 64 concurrent requests with 64-token prompts drops from 1.5 s to 0.29 s.
+- The gain grows with the number of requests waiting: at 16 concurrent requests it is +25 % for 64-token
+  prompts, and with one request at a time it is +0-6 %.
+- It stops helping at about 2,048 prompt tokens, the size of one prefill step. With
+  `--max-num-batched-tokens 4096`, `"num_batched_tokens_buckets": [128, 256, 512, 1024, 2048, 4096]` and
+  `VLLM_NEURON_PACKED_PREFILL_MAX_TOKENS=4096` it still gives +15 % at 2,048 and +8 % at 3,072 tokens.
+- GSM8K-CoT (250 questions) scored 0.896 with packing and 0.876 without. Prompts that share a step can change
+  greedy output in the last bits, so outputs are not always identical to an unpacked run.
+- It turns itself off (with a log line) with prefix caching, LoRA or structured outputs.
+
+---
+
 ### Optional: EAGLE3 speculative decoding
 
 A small public draft model,
@@ -238,6 +267,18 @@ Measured on trn2.3xlarge with chat prompts and 256 output tokens (2026-10-28):
 - It helps most at 16 concurrent requests and does nothing at 4. We have not measured it above 16 or with
   `max_model_len` above 4096.
 - The first start compiles for about 48 minutes instead of about 20.
+
+**EAGLE3 with packed prefill.** Add `VLLM_NEURON_MAX_PREFILLS_PER_BATCH=8` to the EAGLE3 command. Same instance,
+chat prompts, 256 output tokens, median of 6-10 runs (2026-11-18):
+
+| Concurrent requests | 1 | 4 | 16 |
+|---|---:|---:|---:|
+| EAGLE3 | 186 | 407 | 914 |
+| **EAGLE3 + packing** | 175 (-6 %) | 414 (+2 %) | **1,010 (+10 %)** |
+
+The acceptance rate is the same (0.68-0.69), and GSM8K-CoT (250 questions) was 0.880 with packing and 0.856
+without. Use it if several requests are usually in flight; with one request at a time it is slightly slower.
+Reinstall the vllm-neuron branch (step 2) if you installed it before 2026-11-18.
 
 ## Results
 
