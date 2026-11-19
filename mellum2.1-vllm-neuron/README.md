@@ -11,6 +11,7 @@ DLAMI's vLLM environment:
 | Branch | What it is |
 |---|---|
 | [`jimburtoft/vllm-neuron@mellum-trn2-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/mellum-trn2-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus the Mellum model (sliding-window + full attention, YaRN RoPE, 64-expert MoE), sliding-window KV admission and ring, and a fix for vLLM's Mellum config |
+| [`jimburtoft/nki-library@mellum-trn2-2.33`](https://github.com/jimburtoft/nki-library/tree/mellum-trn2-2.33) | Optional, for the [single FP8 expert copy](#highest-throughput-single-fp8-expert-copy): NKI Library 2.33 plus FP8 MoE prefill fixes |
 
 The DLAMI's own NKI Library is used as is.
 
@@ -19,7 +20,7 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no spe
 
 | Workload | Result (one device) |
 |---|---:|
-| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [High concurrency](#high-concurrency)) | **3,994** output tok/s |
+| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **4,981** output tok/s |
 | Online, 256 concurrent, 1,024 in / 1,024 out | **2,985** output tok/s (TPOT 80 ms) |
 | Online, 64 concurrent, 1,024 in / 1,024 out | **1,866** output tok/s (TPOT 32 ms) |
 | One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
@@ -204,6 +205,28 @@ vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking --tensor-parallel-size 4 --ena
 - With the default KV budget about 256 requests of 1k / 1k fit at once; more requests wait in the queue.
 - A KV fraction above about 0.45 does not fit in HBM next to the decode graphs (`NCC_EOOM002` at compile time
   or `Allocation Failure` at load), and neither does `--max-num-seqs 1024`.
+
+### Highest throughput: single FP8 expert copy
+
+For the most output tokens per second at 512 concurrent requests, keep only an FP8 copy of the experts. This uses a
+second public branch, a patched NKI Library MoE prefill kernel:
+
+```bash
+pip install --no-deps --force-reinstall "git+https://github.com/jimburtoft/nki-library.git@mellum-trn2-2.33"
+export MELLUM_MOE_EM=1 MELLUM_MOE_FP8_ONLY=1 MELLUM_MOE_FP8_PAD_I=0
+export VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION=0.42 VLLM_NEURON_MAX_PREFILLS_PER_BATCH=8
+vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking --tensor-parallel-size 4 --enable-expert-parallel \
+  --max-model-len 8192 --max-num-seqs 512 --max-num-batched-tokens 8192 --no-enable-prefix-caching \
+  --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes \
+  --additional-config '{"neuron_config": {"decode_context_length_buckets": [2048]}}'
+```
+
+- The experts are converted to FP8 (e4m3, one scale per output column) at load; the bf16 copy is freed, which leaves
+  room for 512 requests in the KV cache.
+- Decode uses an NKI kernel that reads each local expert once per step; prefill uses the NKI Library's FP8 MoE kernel
+  with direct FP8 matmuls. With the stock 2.33 NKI Library this mode fails to compile (`NCC_IGCA108`).
+- Measured: 4,981 output tok/s at 512 concurrent requests (128 in / 1,024 out), 3,744 at 64; first token 91 / 234 ms
+  for one 1k / 4k prompt. GSM8K-100 96 %.
 
 ### Long prompts (up to ~48k tokens)
 
