@@ -13,7 +13,7 @@ DLAMI's vLLM environment:
 | [`jimburtoft/vllm-neuron@mellum-trn2-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/mellum-trn2-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus the Mellum model (sliding-window + full attention, YaRN RoPE, 64-expert MoE), sliding-window KV admission and ring, and a fix for vLLM's Mellum config |
 | [`jimburtoft/nki-library@mellum-trn2-2.33`](https://github.com/jimburtoft/nki-library/tree/mellum-trn2-2.33) | Optional, for the [single FP8 expert copy](#highest-throughput-single-fp8-expert-copy): NKI Library 2.33 plus FP8 MoE prefill fixes |
 
-The DLAMI's own NKI Library is used as is.
+The DLAMI's own NKI Library is used as is, except for the optional single-FP8-copy mode.
 
 Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no speculative decoding (details in
 [Results](#results)):
