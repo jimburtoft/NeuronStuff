@@ -280,6 +280,30 @@ The acceptance rate is the same (0.68-0.69), and GSM8K-CoT (250 questions) was 0
 without. Use it if several requests are usually in flight; with one request at a time it is slightly slower.
 Reinstall the vllm-neuron branch (step 2) if you installed it before 2026-11-18.
 
+---
+
+### Optional: FP8 KV cache for long requests
+
+Add `--kv-cache-dtype fp8` to the step 4 command and `"fp8_packed_kv": true,` inside `neuron_config`. The KV cache
+then holds twice as many tokens (1.51M instead of 0.76M on trn2.3xlarge), at the same speed: decode step and time to
+first token are within 3 % of the BF16 cache. Reinstall the vllm-neuron branch (step 2) if you installed it before
+2026-11-20.
+
+Measured on trn2.3xlarge, random prompts, output tokens/s:
+
+| Prompt / output tokens, concurrent requests | BF16 KV cache | FP8 KV cache |
+|---|---:|---:|
+| 512 / 128, 64 | 1,096 | 1,109 (+1 %) |
+| 4,000 / 128, 64 | 383 | 393 (+3 %) |
+| 6,000 / 1,024, 64 (`--max-num-seqs 128`) | 979 | **1,129 (+15 %)** |
+| 6,000 / 1,024, 128 (`--max-num-seqs 128`) | 843 | **1,202 (+43 %)** |
+
+- It helps when the BF16 cache cannot hold all running requests: long prompts, long outputs, many requests.
+- GSM8K-CoT (250 questions) scored 0.892. Greedy output starts to differ from the BF16 cache after a few dozen tokens,
+  as expected for an 8-bit cache.
+- Packed prefill works with it (+51 % at 64-token prompts and 64 concurrent requests).
+- **Not with EAGLE3 yet.** EAGLE3 + FP8 KV gives correct output but is 35-50 % slower than EAGLE3 with the BF16 cache.
+
 ## Results
 
 trn2.3xlarge, SDK 2.33 DLAMI, TP=4, `max_model_len` 8192, greedy, prefix caching off. Every run uses
