@@ -20,7 +20,7 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no spe
 
 | Workload | Result (one device) |
 |---|---:|
-| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **4,981** output tok/s |
+| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,175** output tok/s |
 | Online, 256 concurrent, 1,024 in / 1,024 out | **2,985** output tok/s (TPOT 80 ms) |
 | Online, 64 concurrent, 1,024 in / 1,024 out | **1,866** output tok/s (TPOT 32 ms) |
 | One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
@@ -218,14 +218,18 @@ export VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION=0.42 VLLM_NEURON_MAX_PREFILLS_PER_
 vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking --tensor-parallel-size 4 --enable-expert-parallel \
   --max-model-len 8192 --max-num-seqs 512 --max-num-batched-tokens 8192 --no-enable-prefix-caching \
   --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser hermes \
-  --additional-config '{"neuron_config": {"decode_context_length_buckets": [2048]}}'
+  --additional-config '{"neuron_config": {"decode_context_length_buckets": [1024, 2048, 4096]}}'
 ```
+
+Or use the preset script from the branch: `source ~/vllm-neuron/tools/mellum/preset.sh throughput`, then
+`vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking $MELLUM_SERVE_ARGS --additional-config "$MELLUM_ADDITIONAL_CONFIG"`
+(presets: `latency`, `mixed`, `throughput`, `long`).
 
 - The experts are converted to FP8 (e4m3, one scale per output column) at load; the bf16 copy is freed, which leaves
   room for 512 requests in the KV cache.
 - Decode uses an NKI kernel that reads each local expert once per step; prefill uses the NKI Library's FP8 MoE kernel
   with direct FP8 matmuls. With the stock 2.33 NKI Library this mode fails to compile (`NCC_IGCA108`).
-- Measured: 4,981 output tok/s at 512 concurrent requests (128 in / 1,024 out), 3,744 at 64; first token 91 / 234 ms
+- Measured: 5,175 output tok/s at 512 concurrent requests (128 in / 1,024 out), 3,799 at 64; first token 91 / 234 ms
   for one 1k / 4k prompt. GSM8K-100 96 %.
 
 ### Long prompts (up to ~48k tokens)
