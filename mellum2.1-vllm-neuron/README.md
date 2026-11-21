@@ -20,7 +20,7 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no spe
 
 | Workload | Result (one device) |
 |---|---:|
-| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,175** output tok/s |
+| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,738** output tok/s |
 | Online, 256 concurrent, 1,024 in / 1,024 out | **2,985** output tok/s (TPOT 80 ms) |
 | Online, 64 concurrent, 1,024 in / 1,024 out | **1,866** output tok/s (TPOT 32 ms) |
 | One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
@@ -229,8 +229,11 @@ Or use the preset script from the branch: `source ~/vllm-neuron/tools/mellum/pre
   room for 512 requests in the KV cache.
 - Decode uses an NKI kernel that reads each local expert once per step; prefill uses the NKI Library's FP8 MoE kernel
   with direct FP8 matmuls. With the stock 2.33 NKI Library this mode fails to compile (`NCC_IGCA108`).
-- Measured: 5,175 output tok/s at 512 concurrent requests (128 in / 1,024 out), 3,799 at 64; first token 91 / 234 ms
-  for one 1k / 4k prompt. GSM8K-100 96 %.
+- Above 128 decode rows, the decode kernel sorts the routed tokens into groups of up to 128 per expert and runs only
+  the groups in use, so each expert's weights are read about once per step instead of once per 128 rows
+  (`MELLUM_MOE_EM_GATHER=0` turns this off).
+- Measured: 5,738 output tok/s at 512 concurrent requests (128 in / 1,024 out, TPOT 86 ms), 4,181 at 256, 3,799 at 64;
+  first token 91 / 234 ms for one 1k / 4k prompt. GSM8K (all 1,319 questions, 256 concurrent) 95.5 %.
 
 ### Long prompts (up to ~48k tokens)
 
