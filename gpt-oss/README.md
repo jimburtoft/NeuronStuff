@@ -268,8 +268,11 @@ Measured on trn2.3xlarge with chat prompts and 256 output tokens (2026-10-28):
   `max_model_len` above 4096.
 - The first start compiles for about 48 minutes instead of about 20.
 
-**EAGLE3 with packed prefill.** Add `VLLM_NEURON_MAX_PREFILLS_PER_BATCH=8` to the EAGLE3 command. Same instance,
-chat prompts, 256 output tokens, median of 6-10 runs (2026-11-18):
+**Do not combine EAGLE3 with packed prefill (`VLLM_NEURON_MAX_PREFILLS_PER_BATCH`) yet.** The engine can hang
+(`RPC call to sample_tokens timed out`) on a packed step of several fresh prompts. In testing that happened on 3 of 6
+fresh server starts under a burst of 64 concurrent requests (2026-11-22). Packed prefill without EAGLE3, and EAGLE3
+without packing, are not affected. For reference, the throughput measured before the hang was found
+(chat prompts, 256 output tokens, median of 6-10 runs, 2026-11-18):
 
 | Concurrent requests | 1 | 4 | 16 |
 |---|---:|---:|---:|
@@ -277,8 +280,13 @@ chat prompts, 256 output tokens, median of 6-10 runs (2026-11-18):
 | **EAGLE3 + packing** | 175 (-6 %) | 414 (+2 %) | **1,010 (+10 %)** |
 
 The acceptance rate is the same (0.68-0.69), and GSM8K-CoT (250 questions) was 0.880 with packing and 0.856
-without. Use it if several requests are usually in flight; with one request at a time it is slightly slower.
-Reinstall the vllm-neuron branch (step 2) if you installed it before 2026-11-18.
+without.
+
+**`HarmonyError` / HTTP 500 in fixed-length chat benchmarks.** If a benchmark forces the output length on
+`/v1/chat/completions` (`ignore_eos: true` past the model's natural end), gpt-oss repeats `<|return|>` and the chat
+parser fails with `Unexpected token 200002 while expecting start token 200006`. This is vLLM / Harmony behaviour, not
+a Neuron fault, and normal requests do not hit it. For fixed-length runs use `vllm bench serve --dataset-name random`
+or `/v1/completions`.
 
 ---
 
@@ -305,7 +313,7 @@ Measured on trn2.3xlarge, random prompts, output tokens/s:
 - **Works with EAGLE3 at the same speed** (add the two FP8 settings to the EAGLE3 command; reinstall the branch if you
   installed it before 2026-11-21). Chat prompts, 256 output tokens, tokens/s with the BF16 / FP8 cache: 185-190 /
   178-186 at 1 request, 411-413 / 411-414 at 4, 927-933 / 956-963 at 16. Same acceptance rate, GSM8K 0.876.
-- Do not combine EAGLE3 + FP8 KV with packed prefill: time to first token rises from about 65 ms to about 245 ms.
+- Do not combine EAGLE3 + FP8 KV with packed prefill (engine hang, see the EAGLE3 section).
 
 ## Results
 
