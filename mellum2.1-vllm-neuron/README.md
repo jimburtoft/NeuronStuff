@@ -225,6 +225,9 @@ Or use the preset script from the branch: `source ~/vllm-neuron/tools/mellum/pre
 `vllm serve JetBrains/Mellum2.1-12B-A2.5B-Thinking $MELLUM_SERVE_ARGS --additional-config "$MELLUM_ADDITIONAL_CONFIG"`
 (presets: `latency`, `mixed`, `throughput`, `long`).
 
+- Install the NKI Library branch before the first serve on the machine. If you installed it after a run, clear
+  `/var/tmp/nki-trace-cache-uid*` and `/var/tmp/nki-intermediate-cache` (the NKI trace cache otherwise keeps the stock
+  kernel, and the compile fails with `NCC_IGCA108`).
 - The experts are converted to FP8 (e4m3, one scale per output column) at load; the bf16 copy is freed, which leaves
   room for 512 requests in the KV cache.
 - Decode uses an NKI kernel that reads each local expert once per step; prefill uses the NKI Library's FP8 MoE kernel
