@@ -3,26 +3,28 @@
 Serve [`JetBrains/Mellum2.1-12B-A2.5B-Thinking`](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking)
 (a 12B mixture-of-experts reasoning model with 2.5B active parameters) on one `trn2.3xlarge` with vLLM, on the
 public **Neuron SDK 2.33 DLAMI** (`Deep Learning AMI Neuron (Ubuntu 24.04) SDK 2.33.0 20261020`). Every command
-below was run as written on a `trn2.3xlarge`, starting from the stock DLAMI environment, on 2026-11-09.
+below was run as written on a fresh `trn2.3xlarge`, starting from the stock DLAMI environment (last checked
+2026-11-23).
 
-The DLAMI's stock vllm-neuron does not support Mellum. This guide installs one public branch on top of the
-DLAMI's vLLM environment:
+The DLAMI's stock vllm-neuron does not support Mellum. This guide installs public branches on top of the DLAMI's
+vLLM environment:
 
 | Branch | What it is |
 |---|---|
 | [`jimburtoft/vllm-neuron@mellum-trn2-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/mellum-trn2-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus the Mellum model (sliding-window + full attention, YaRN RoPE, 64-expert MoE), sliding-window KV admission and ring, and a fix for vLLM's Mellum config |
-| [`jimburtoft/nki-library@mellum-trn2-2.33`](https://github.com/jimburtoft/nki-library/tree/mellum-trn2-2.33) | Optional, for the [single FP8 expert copy](#highest-throughput-single-fp8-expert-copy): NKI Library 2.33 plus FP8 MoE prefill fixes |
+| [`jimburtoft/nki-library@mellum-trn2-2.33`](https://github.com/jimburtoft/nki-library/tree/mellum-trn2-2.33) | Only for the [highest-throughput mode](#highest-throughput-single-fp8-expert-copy) (FP8 experts): NKI Library 2.33 plus an FP8 MoE prefill fix |
 
-The DLAMI's own NKI Library is used as is, except for the optional single-FP8-copy mode.
+The default BF16 setup uses the DLAMI's own NKI Library.
 
-Measured on one Trainium2 device (TP=4, expert parallel 4), BF16, greedy, no speculative decoding (details in
+Measured on one Trainium2 device (TP=4, expert parallel 4), greedy, no speculative decoding (details in
 [Results](#results)):
 
 | Workload | Result (one device) |
 |---|---:|
-| Online, 512 concurrent requests, 128 in / 1,024 out (settings in [Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,738** output tok/s |
-| Online, 256 concurrent, 1,024 in / 1,024 out | **2,985** output tok/s (TPOT 80 ms) |
-| Online, 64 concurrent, 1,024 in / 1,024 out | **1,866** output tok/s (TPOT 32 ms) |
+| Online, 512 concurrent requests, 128 in / 1,024 out, FP8 experts ([Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,731** output tok/s |
+| Online, 256 concurrent, 128 in / 1,024 out, FP8 experts | **4,688** output tok/s (TPOT 53 ms) |
+| Online, 512 concurrent, 1,024 in / 1,024 out, FP8 experts | **4,506** output tok/s (TPOT 101 ms) |
+| Online, 64 concurrent, 1,024 in / 1,024 out, BF16 | **1,866** output tok/s (TPOT 32 ms) |
 | One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
 | One request with a 30,000-token prompt | time to first token 1.95 s, 10.3 ms per token |
 
@@ -103,7 +105,7 @@ Versions in the environment after the install:
 | Component | Version |
 |---|---|
 | vllm | `0.29.0` |
-| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `bf623f7` or later) |
+| vllm-neuron | `0.29.0.1.2.0` (branch `mellum-trn2-0.29` @ `eebb12c` or later) |
 | transformers | `5.17.0` (has `MellumConfig`) |
 | nki | `0.7.0` |
 | neuronx-cc | `2.28.7631.0` |
@@ -235,7 +237,8 @@ Or use the preset script from the branch: `source ~/vllm-neuron/tools/mellum/pre
 - Above 128 decode rows, the decode kernel sorts the routed tokens into groups of up to 128 per expert and runs only
   the groups in use, so each expert's weights are read about once per step instead of once per 128 rows
   (`MELLUM_MOE_EM_GATHER=0` turns this off).
-- Measured: 5,748 output tok/s at 512 concurrent requests (128 in / 1,024 out, TPOT 86 ms), 4,671 at 256, 3,799 at 64;
+- Measured on a fresh instance with the preset (2026-11-23): 5,731 output tok/s at 512 concurrent requests (128 in /
+  1,024 out, TPOT 86 ms), 4,688 at 256 (TPOT 53 ms), 3,817 at 64 (TPOT 16 ms), 4,506 for 1,024 / 1,024 at 512;
   first token 91 / 234 ms for one 1k / 4k prompt. GSM8K (all 1,319 questions, 256 concurrent) 95.3 %. More than 512 concurrent requests is slower.
 
 ### Long prompts (up to ~48k tokens)
@@ -379,7 +382,9 @@ Decode barely slows with context because 21 of the 28 layers only read a 1,024-t
   reads only the real 2,304 rows (+38 % throughput at batch 64).
 - **RoPE.** Sliding-window layers use plain RoPE. The 7 full-attention layers use YaRN (factor 16 over an 8,192
   original context, attention factor 1.277), as in transformers.
-- **Not supported yet:** MTP speculative decoding (the checkpoint has no MTP head), FP8 weights or KV cache.
+- **FP8.** The checkpoint is BF16. The highest-throughput mode converts the experts to FP8 (e4m3, one scale per
+  output column) at load; attention, the router and the KV cache stay BF16.
+- **Not supported yet:** MTP speculative decoding (the checkpoint has no MTP head), FP8 KV cache.
 
 ## Troubleshooting
 
