@@ -268,16 +268,17 @@ Measured on trn2.3xlarge with chat prompts and 256 output tokens (2026-10-28):
   `max_model_len` above 4096.
 - The first start compiles for about 48 minutes instead of about 20.
 
-**Do not combine EAGLE3 with packed prefill (`VLLM_NEURON_MAX_PREFILLS_PER_BATCH`) yet.** The engine can hang
-(`RPC call to sample_tokens timed out`) on a packed step of several fresh prompts. In testing that happened on 3 of 6
-fresh server starts under a burst of 64 concurrent requests (2026-11-22). Packed prefill without EAGLE3, and EAGLE3
-without packing, are not affected. For reference, the throughput measured before the hang was found
-(chat prompts, 256 output tokens, median of 6-10 runs, 2026-11-18):
+**EAGLE3 with packed prefill.** Add `VLLM_NEURON_MAX_PREFILLS_PER_BATCH=8` to the EAGLE3 command. Reinstall the
+vllm-neuron branch (step 2) if you installed it before 2026-11-23: earlier builds could hang the engine
+(`RPC call to sample_tokens timed out`) on the first packed step after start (4 of 12 fresh starts). The fix waits for
+each packed prefill step to finish before the next step is dispatched: 0 hangs in 24 fresh starts, same speed.
+Chat prompts, 256 output tokens, output tokens/s:
 
 | Concurrent requests | 1 | 4 | 16 |
 |---|---:|---:|---:|
-| EAGLE3 | 186 | 407 | 914 |
-| **EAGLE3 + packing** | 175 (-6 %) | 414 (+2 %) | **1,010 (+10 %)** |
+| EAGLE3 (2026-11-18) | 186 | 407 | 914 |
+| EAGLE3 + packing (2026-11-18) | 175 (-6 %) | 414 (+2 %) | 1,010 (+10 %) |
+| **EAGLE3 + packing, with the hang fix (2026-11-23)** | 169-186 | 413-418 | **1,013-1,041** |
 
 The acceptance rate is the same (0.68-0.69), and GSM8K-CoT (250 questions) was 0.880 with packing and 0.856
 without.
@@ -313,7 +314,8 @@ Measured on trn2.3xlarge, random prompts, output tokens/s:
 - **Works with EAGLE3 at the same speed** (add the two FP8 settings to the EAGLE3 command; reinstall the branch if you
   installed it before 2026-11-21). Chat prompts, 256 output tokens, tokens/s with the BF16 / FP8 cache: 185-190 /
   178-186 at 1 request, 411-413 / 411-414 at 4, 927-933 / 956-963 at 16. Same acceptance rate, GSM8K 0.876.
-- Do not combine EAGLE3 + FP8 KV with packed prefill (engine hang, see the EAGLE3 section).
+- EAGLE3 + FP8 KV + packed prefill works (no hang with the 2026-11-23 build, GSM8K 0.876) but is slower than without
+  packing: 152-156 / 321-325 / 686-705 vs 178-186 / 411-414 / 956-963 tokens/s at 1 / 4 / 16 requests.
 
 ## Results
 
