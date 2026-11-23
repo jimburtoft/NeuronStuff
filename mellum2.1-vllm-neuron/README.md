@@ -21,9 +21,9 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), greedy, no speculati
 
 | Workload | Result (one device) |
 |---|---:|
-| Online, 512 concurrent requests, 128 in / 1,024 out, FP8 experts ([Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,731** output tok/s |
-| Online, 256 concurrent, 128 in / 1,024 out, FP8 experts | **4,688** output tok/s (TPOT 53 ms) |
-| Online, 512 concurrent, 1,024 in / 1,024 out, FP8 experts | **4,506** output tok/s (TPOT 101 ms) |
+| Online, 512 concurrent requests, 128 in / 1,024 out, FP8 experts ([Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,909** output tok/s |
+| Online, 256 concurrent, 128 in / 1,024 out, FP8 experts | **4,710** output tok/s (TPOT 53 ms) |
+| Online, 512 concurrent, 1,024 in / 1,024 out, FP8 experts | **4,532** output tok/s (TPOT 100 ms) |
 | Online, 64 concurrent, 1,024 in / 1,024 out, BF16 | **1,866** output tok/s (TPOT 32 ms) |
 | One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
 | One request with a 30,000-token prompt | time to first token 1.95 s, 10.3 ms per token |
@@ -234,12 +234,14 @@ Or use the preset script from the branch: `source ~/vllm-neuron/tools/mellum/pre
   room for 512 requests in the KV cache.
 - Decode uses an NKI kernel that reads each local expert once per step; prefill uses the NKI Library's FP8 MoE kernel
   with direct FP8 matmuls. With the stock 2.33 NKI Library this mode fails to compile (`NCC_IGCA108`).
-- Above 128 decode rows, the decode kernel sorts the routed tokens into groups of up to 128 per expert and runs only
-  the groups in use, so each expert's weights are read about once per step instead of once per 128 rows
-  (`MELLUM_MOE_EM_GATHER=0` turns this off).
-- Measured on a fresh instance with the preset (2026-11-23): 5,731 output tok/s at 512 concurrent requests (128 in /
-  1,024 out, TPOT 86 ms), 4,688 at 256 (TPOT 53 ms), 3,817 at 64 (TPOT 16 ms), 4,506 for 1,024 / 1,024 at 512;
-  first token 91 / 234 ms for one 1k / 4k prompt. GSM8K (all 1,319 questions, 256 concurrent) 95.3 %. More than 512 concurrent requests is slower.
+- Above 128 decode rows, the decode kernel sorts the routed tokens into groups per expert (64 rows up to 256 decode
+  rows, 128 above) and runs only the groups in use, so each expert's weights are read about once per step instead of
+  once per 128 rows (`MELLUM_MOE_EM_GATHER=0` turns this off). Above 256 rows it also keeps the hidden states in
+  on-chip memory and adds the expert outputs up in bf16.
+- Measured with the preset on fresh instances (2026-11-23, branch @ `6480eeb`): 5,909 output tok/s at 512 concurrent
+  requests (128 in / 1,024 out, TPOT 84 ms), 4,710 at 256 (TPOT 53 ms), 3,818 at 64 (TPOT 16 ms), 4,532 for
+  1,024 / 1,024 at 512;
+  first token 91 / 234 ms for one 1k / 4k prompt. GSM8K (all 1,319 questions) 95.3 % at 256 concurrent, 94.8 % at 512. More than 512 concurrent requests is slower.
 
 ### Long prompts (up to ~48k tokens)
 
