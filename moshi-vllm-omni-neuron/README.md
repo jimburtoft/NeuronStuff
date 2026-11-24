@@ -37,13 +37,31 @@ instance, API server and orchestrator process each pinned to their own CPU core:
 | 4 minutes | 56 | yes (2 runs) | 67-95 / 546-743 ms |
 | 4 minutes | 60 | yes | 63-79 / 140 ms |
 | 4 minutes | 64 | yes (3 of 3 runs) | 59-109 / 221-451 ms |
-| 4 minutes | **72** | **yes (3 of 3 runs)** | **53-114 / 106-777 ms** |
+| 4 minutes | 72 | yes (3 of 3 runs) | 53-114 / 106-777 ms |
+| 4 minutes | 76 | yes (2 of 2 runs) | 45-59 / 88-466 ms |
+| 4 minutes | **80** | **yes (4 of 4 runs)** | **54-97 / 123-515 ms** |
+| 4 minutes | 84 | 2 of 5 runs (the edge) | 55-72 / 518-988 ms on the clean runs |
 
-The 60- and 64-session rows add host-side changes in our stage-0 path: per-step messages to the Neuron workers that
-no longer grow with conversation length, user audio sent as one packed tensor per step, and batched hand-off between
-stages. The 72-session row runs PersonaPlex as a single pipeline stage (the Neuron workers decode the audio and hand
-it straight to the realtime front end; user audio as raw samples). 72 is the largest batch size compiled for these
-runs; higher counts are being measured.
+How the rows were reached:
+- **60 and 64 sessions:** host-side changes in our stage-0 path.
+  - Per-step messages to the Neuron workers no longer grow with conversation length.
+  - User audio is sent as one packed tensor per step.
+  - Hand-off between stages is batched.
+- **72 sessions:** PersonaPlex runs as a single pipeline stage. The Neuron workers decode the audio and hand it
+  straight to the realtime front end; user audio arrives as raw samples.
+- **76-84 sessions:** two device-side settings cut the model step at full load by about 7 ms.
+  - `MOSHI_DEP_NKI_MINB=1`: the NKI depth-transformer kernel.
+  - `MOSHI_KV_BLOCK=12` with context buckets `768` (+ the full window): the attention kernel keeps 12-position KV
+    blocks at the 1536-slot window instead of splitting 32-slot blocks into 4-position pieces, so its KV reads are 3x
+    larger.
+
+Above 80 the limit is the device step: about 66-68 ms of each 80 ms frame at 84 sessions, plus the host work around
+it. Quality at 84 sessions:
+- Teacher-forced against the fp32 reference: text 99.3 %, audio codes 97.8 %.
+- Whisper's transcript of the generated speech vs the model's own text: WER 0.110 mean / 0.105 median (0.118 / 0.114
+  at 40 sessions with a BF16 KV cache).
+
+With a BF16 KV cache instead of FP8, the same two settings give **64 sessions** (2 of 2 runs; 68 does not keep up).
 
 **Moshi (moshiko / moshika)**, 3000-frame window, 28.8 s conversation streamed at real-time pace:
 
