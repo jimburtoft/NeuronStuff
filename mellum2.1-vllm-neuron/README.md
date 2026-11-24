@@ -12,7 +12,7 @@ vLLM environment:
 | Branch | What it is |
 |---|---|
 | [`jimburtoft/vllm-neuron@mellum-trn2-0.29`](https://github.com/jimburtoft/vllm-neuron/tree/mellum-trn2-0.29) | vllm-neuron 0.29.0.1.2.0 (the DLAMI's version) plus the Mellum model (sliding-window + full attention, YaRN RoPE, 64-expert MoE), sliding-window KV admission and ring, and a fix for vLLM's Mellum config |
-| [`jimburtoft/nki-library@mellum-trn2-2.33`](https://github.com/jimburtoft/nki-library/tree/mellum-trn2-2.33) | Only for the [highest-throughput mode](#highest-throughput-single-fp8-expert-copy) (FP8 experts): NKI Library 2.33 plus an FP8 MoE prefill fix |
+| [`jimburtoft/nki-library@mellum-trn2-2.33`](https://github.com/jimburtoft/nki-library/tree/mellum-trn2-2.33) | Only for the [highest-throughput mode](#highest-throughput-single-fp8-expert-copy) (FP8 experts): NKI Library 2.33 plus an FP8 MoE prefill fix and a faster batched decode attention kernel |
 
 The default BF16 setup uses the DLAMI's own NKI Library.
 
@@ -21,9 +21,9 @@ Measured on one Trainium2 device (TP=4, expert parallel 4), greedy, no speculati
 
 | Workload | Result (one device) |
 |---|---:|
-| Online, 512 concurrent requests, 128 in / 1,024 out, FP8 experts ([Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **5,909** output tok/s |
-| Online, 256 concurrent, 128 in / 1,024 out, FP8 experts | **4,710** output tok/s (TPOT 53 ms) |
-| Online, 512 concurrent, 1,024 in / 1,024 out, FP8 experts | **4,532** output tok/s (TPOT 100 ms) |
+| Online, 512 concurrent requests, 128 in / 1,024 out, FP8 experts ([Highest throughput](#highest-throughput-single-fp8-expert-copy)) | **6,209** output tok/s |
+| Online, 256 concurrent, 128 in / 1,024 out, FP8 experts | **4,872** output tok/s (TPOT 51 ms) |
+| Online, 512 concurrent, 1,024 in / 1,024 out, FP8 experts | **4,876** output tok/s (TPOT 92 ms) |
 | Online, 64 concurrent, 1,024 in / 1,024 out, BF16 | **1,866** output tok/s (TPOT 32 ms) |
 | One request, 1,024 / 4,096-token prompt | time to first token **80 / 207 ms**, then 9.7 ms per token |
 | One request with a 30,000-token prompt | time to first token 1.95 s, 10.3 ms per token |
@@ -237,11 +237,13 @@ Or use the preset script from the branch: `source ~/vllm-neuron/tools/mellum/pre
 - Above 128 decode rows, the decode kernel sorts the routed tokens into groups per expert (64 rows up to 256 decode
   rows, 128 above) and runs only the groups in use, so each expert's weights are read about once per step instead of
   once per 128 rows (`MELLUM_MOE_EM_GATHER=0` turns this off). Above 256 rows it also keeps the hidden states in
-  on-chip memory and adds the expert outputs up in bf16.
-- Measured with the preset on fresh instances (2026-11-23, branch @ `6480eeb`): 5,909 output tok/s at 512 concurrent
-  requests (128 in / 1,024 out, TPOT 84 ms), 4,710 at 256 (TPOT 53 ms), 3,818 at 64 (TPOT 16 ms), 4,532 for
-  1,024 / 1,024 at 512;
-  first token 91 / 234 ms for one 1k / 4k prompt. GSM8K (all 1,319 questions) 95.3 % at 256 concurrent, 94.8 % at 512. More than 512 concurrent requests is slower.
+  on-chip memory and adds the expert outputs up in bf16, and the per-expert token lists are built by an NKI kernel.
+- The NKI Library branch also batches the decode attention kernel's KV-block loads across sequences (vLLM's 32-token
+  KV blocks get split into 4-16-token blocks at these context lengths, which made the loads tiny).
+- Measured with the preset (2026-11-24, vllm-neuron @ `a6d48c6`, NKI Library @ `c1913fb`): 6,209 output tok/s at
+  512 concurrent requests (128 in / 1,024 out, TPOT 80 ms), 4,872 at 256 (TPOT 51 ms), 3,879 at 64 (TPOT 16 ms),
+  4,876 for 1,024 / 1,024 at 512;
+  first token 91 / 234 ms for one 1k / 4k prompt. GSM8K (all 1,319 questions) 95.3 % at 256 concurrent, 95.2 % at 512. More than 512 concurrent requests is slower.
 
 ### Long prompts (up to ~48k tokens)
 
