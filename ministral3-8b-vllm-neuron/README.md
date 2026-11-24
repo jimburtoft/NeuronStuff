@@ -113,7 +113,7 @@ Versions in the environment (unchanged DLAMI packages):
 | Component | Version |
 |---|---|
 | vllm | `0.29.0` |
-| vllm-neuron | `0.29.0.1.2.0` (branch `ministral3-trn2-0.29` @ `96b1126` or later, from `PYTHONPATH`) |
+| vllm-neuron | `0.29.0.1.2.0` (branch `ministral3-trn2-0.29` @ `f0e1a3a` or later, from `PYTHONPATH`) |
 | nkilib | branch `ministral3/unified-2.33` @ `fe8b59b` (from `PYTHONPATH`) |
 | transformers | `5.17.0` |
 | mistral_common | `1.12.0` |
@@ -143,7 +143,7 @@ export NEURON_SKIP_EFA_AFFINITY=1    # REQUIRED on trn2.3xlarge (no EFA device)
 export UNSAFE_FP8FNCAST=1            # REQUIRED for the packed FP8 KV cache
 
 vllm serve mistralai/Ministral-3-8B-Instruct-2512-BF16 --tensor-parallel-size 4 \
-  --tokenizer-mode mistral --config-format hf --load-format safetensors --language-model-only \
+  --tokenizer-mode mistral --language-model-only \
   --max-model-len 2048 --max-num-batched-tokens 2048 --max-num-seqs 64 --no-enable-prefix-caching \
   --kv-cache-dtype fp8_e4m3 \
   --additional-config '{"neuron_config": {"fp8_packed_kv": true,
@@ -172,7 +172,6 @@ SDK 2.33 notes for this command:
 
 | Setting | Why |
 |---|---|
-| `--config-format hf --load-format safetensors` | For a `mistralai/...` hub id with a `params.json`, vLLM picks the Mistral-native format and inspects `PixtralForConditionalGeneration`, which fails to import with the DLAMI's transformers (`cannot import name 'PixtralRotaryEmbedding'`). These flags use `config.json` and the HF safetensors. |
 | `--tokenizer-mode mistral` | The repository has no Jinja chat template for the Hugging Face tokenizer; the tekken tokenizer gives the same chat token ids as transformers' `apply_chat_template`. |
 | `--language-model-only` | Text decoder only. For images, see "Images" in the model README. |
 | `NEURON_SKIP_EFA_AFFINITY=1` | A trn2.3xlarge has no EFA device; without it the engine fails at start with `No EFA device found`. |
@@ -229,7 +228,7 @@ python ~/vllm-neuron/vllm_neuron/model/ministral3/convert_economize_eagle3.py ~/
 # aux [2, 17, 31] heads 32 8 128 draft_vocab 32768 tensors 16
 
 vllm serve mistralai/Ministral-3-8B-Instruct-2512-BF16 --tensor-parallel-size 4 \
-  --tokenizer-mode mistral --config-format hf --load-format safetensors --language-model-only \
+  --tokenizer-mode mistral --language-model-only \
   --max-model-len 2048 --max-num-batched-tokens 2048 --max-num-seqs 8 --no-enable-prefix-caching \
   --additional-config '{"neuron_config": {"num_batched_tokens_buckets": [2048], "num_seqs_buckets": [1, 4, 8],
      "decode_context_length_buckets": [1024], "on_device_sampling_config": {"all_greedy": "true"}}}' \
@@ -259,7 +258,7 @@ keep `--max-num-seqs` at 8 or less, and serve without it for maximum throughput.
 
 | Symptom | Fix |
 |---|---|
-| `Model architectures ['PixtralForConditionalGeneration'] failed to be inspected` / `cannot import name 'PixtralRotaryEmbedding'` | Add `--config-format hf --load-format safetensors` (step 4). |
+| `Model architectures ['PixtralForConditionalGeneration'] failed to be inspected` / `cannot import name 'PixtralRotaryEmbedding'` | The branch is older than `f0e1a3a` (it then needs `--config-format hf --load-format safetensors`), or `--config-format mistral` was passed: pull the branch, or drop the flag. |
 | Engine start rejects the `Mistral3ForConditionalGeneration` architecture, or the plugin check in step 2 prints `False` | The branches are not on `PYTHONPATH`: `source examples/vllm_neuron/models/ministral3/setup_optimized.sh ~/nki-library` in this shell (step 2). |
 | `ChatTemplateResolutionError` | Add `--tokenizer-mode mistral`. |
 | `No EFA device found at /sys/bus/pci/devices/...` | `export NEURON_SKIP_EFA_AFFINITY=1`. |
