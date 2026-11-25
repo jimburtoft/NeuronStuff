@@ -1,5 +1,8 @@
 # MoE blockwise-matmul kernels for Trainium2 — routing and backward weight pre-transpose
 
+> **Reproducing the full results (expert parallelism, EP-aware block bound, MFU accounting, where the time goes):
+> see [REPRODUCING.md](./REPRODUCING.md).**
+
 Three NKI pieces for training a fine-grained Mixture-of-Experts layer (many small experts, top-k routing) on AWS
 Trainium2 with the blockwise-matmul MoE kernels in the AWS Neuron NKI library (`nkilib`,
 [aws-neuron/nki-samples](https://github.com/aws-neuron/nki-samples) family):
