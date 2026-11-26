@@ -39,8 +39,10 @@ instance, API server and orchestrator process each pinned to their own CPU core:
 | 4 minutes | 64 | yes (3 of 3 runs) | 59-109 / 221-451 ms |
 | 4 minutes | 72 | yes (3 of 3 runs) | 53-114 / 106-777 ms |
 | 4 minutes | 76 | yes (2 of 2 runs) | 45-59 / 88-466 ms |
-| 4 minutes | **80** | **yes (4 of 4 runs)** | **54-97 / 123-515 ms** |
+| 4 minutes | 80 | yes (4 of 4 runs) | 54-97 / 123-515 ms |
 | 4 minutes | 84 | 2 of 5 runs (the edge) | 55-72 / 518-988 ms on the clean runs |
+| 4 minutes | 88 | yes (2 of 2 runs) | 58-73 / 339-4375 ms |
+| 4 minutes | **92** | **yes (2 of 2 runs)** | **60-102 / 421-1417 ms** |
 
 How the rows were reached:
 - **60 and 64 sessions:** host-side changes in our stage-0 path.
@@ -54,14 +56,22 @@ How the rows were reached:
   - `MOSHI_KV_BLOCK=12` with context buckets `768` (+ the full window): the attention kernel keeps 12-position KV
     blocks at the 1536-slot window instead of splitting 32-slot blocks into 4-position pieces, so its KV reads are 3x
     larger.
+- **88 and 92 sessions:** `MOSHI_DEP_FUSED=1` runs the whole depth transformer of a frame in one NKI launch: all 8
+  codebook steps, their output heads, exact top-k sampling and the next code's embedding. That takes another ~5 ms off
+  the step.
 
-Above 80 the limit is the device step: about 66-68 ms of each 80 ms frame at 84 sessions, plus the host work around
-it. Quality at 84 sessions:
-- Teacher-forced against the fp32 reference: text 99.3 %, audio codes 97.8 %.
-- Whisper's transcript of the generated speech vs the model's own text: WER 0.110 mean / 0.105 median (0.118 / 0.114
-  at 40 sessions with a BF16 KV cache).
+Above 92 the limit is the device step: about 65-68 ms of each 80 ms frame, plus the host work around it.
 
-With a BF16 KV cache instead of FP8, the same two settings give **64 sessions** (2 of 2 runs; 68 does not keep up).
+Quality:
+- Teacher-forced against the fp32 reference: text 99.3 %, audio codes 97.8 % (same with and without the fused depth
+  transformer).
+- Whisper's transcript of the generated speech vs the model's own text, WER mean / median:
+  - 0.100 / 0.094 at 88 sessions (fused depth transformer);
+  - 0.110 / 0.105 at 84;
+  - 0.118 / 0.114 at 40 sessions with a BF16 KV cache.
+
+With a BF16 KV cache instead of FP8, the depth-transformer kernel and KV block settings (without the fused kernel)
+give **64 sessions** (2 of 2 runs; 68 does not keep up).
 
 **Moshi (moshiko / moshika)**, 3000-frame window, 28.8 s conversation streamed at real-time pace:
 
