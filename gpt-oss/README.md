@@ -310,12 +310,12 @@ Measured on trn2.3xlarge, random prompts, output tokens/s:
 - It helps when the BF16 cache cannot hold all running requests: long prompts, long outputs, many requests.
 - GSM8K-CoT (250 questions) scored 0.892. Greedy output starts to differ from the BF16 cache after a few dozen tokens,
   as expected for an 8-bit cache.
-- Packed prefill works with it (+51 % at 64-token prompts and 64 concurrent requests).
+- Packed prefill works with it: 2,224 tokens/s at 64-token prompts and 64 concurrent requests (+61 % over no packing).
 - **Works with EAGLE3 at the same speed** (add the two FP8 settings to the EAGLE3 command; reinstall the branch if you
   installed it before 2026-11-21). Chat prompts, 256 output tokens, tokens/s with the BF16 / FP8 cache: 185-190 /
   178-186 at 1 request, 411-413 / 411-414 at 4, 927-933 / 956-963 at 16. Same acceptance rate, GSM8K 0.876.
-- EAGLE3 + FP8 KV + packed prefill works (no hang with the 2026-11-23 build, GSM8K 0.876) but is slower than without
-  packing: 152-156 / 321-325 / 686-705 vs 178-186 / 411-414 / 956-963 tokens/s at 1 / 4 / 16 requests.
+- EAGLE3 + FP8 KV + packed prefill works at the same speed as with the BF16 cache (reinstall the branch if you installed it
+  before 2026-11-26): 165-179 / 409-411 / 996-1,016 tokens/s at 1 / 4 / 16 requests, GSM8K 0.888.
 
 ## Results
 
