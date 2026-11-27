@@ -70,8 +70,10 @@ Quality:
   - 0.110 / 0.105 at 84;
   - 0.118 / 0.114 at 40 sessions with a BF16 KV cache.
 
-With a BF16 KV cache instead of FP8, the depth-transformer kernel and KV block settings (without the fused kernel)
-give **64 sessions** (2 of 2 runs; 68 does not keep up).
+With a BF16 KV cache instead of FP8:
+- the depth-transformer kernel and KV block settings give 64 sessions;
+- with the fused depth-transformer kernel as well, **68 sessions** (2 of 2 runs; 70 does not keep up). Speech WER is
+  0.101 / 0.094, and teacher-forced accuracy is text 99.7 % / audio codes 99.2 %.
 
 **Moshi (moshiko / moshika)**, 3000-frame window, 28.8 s conversation streamed at real-time pace:
 
